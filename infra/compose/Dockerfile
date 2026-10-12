@@ -1,5 +1,6 @@
 FROM node:22-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a
-RUN corepack enable
+ENV COREPACK_HOME=/opt/corepack
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate && chmod -R a+rX /opt/corepack
 WORKDIR /app
 # Normalize modes: a restrictive host umask (e.g. 077 on hardened hosts) would otherwise
 # leave the copied tree unreadable to USER node at runtime.
@@ -11,6 +12,7 @@ RUN install -d -m 750 -o node -g node /data /app/apps/web/node_modules/.vite-tem
 ARG GIT_SHA
 ENV NODE_ENV=production
 ENV GIT_SHA=$GIT_SHA
+ENV COREPACK_ENABLE_NETWORK=0
 EXPOSE 3100 5173 7091
 USER node
 CMD ["pnpm", "--filter", "@rakazo/api", "start"]
