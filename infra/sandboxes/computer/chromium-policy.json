@@ -1,0 +1,14 @@
+{
+  "BackgroundModeEnabled": false,
+  "BrowserSignin": 0,
+  "ComponentUpdatesEnabled": false,
+  "DomainReliabilityAllowed": false,
+  "MetricsReportingEnabled": false,
+  "NetworkPredictionOptions": 2,
+  "SafeBrowsingProtectionLevel": 0,
+  "SearchSuggestEnabled": false,
+  "SpellCheckServiceEnabled": false,
+  "SyncDisabled": true,
+  "TranslateEnabled": false,
+  "UrlKeyedAnonymizedDataCollectionEnabled": false
+}
