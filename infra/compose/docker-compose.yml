@@ -65,6 +65,8 @@ services:
     build:
       context: ../..
       dockerfile: infra/compose/Dockerfile
+      args:
+        SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     command: ["bash", "-lc", "pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start"]
     env_file:
       - ../../.env
@@ -115,6 +117,8 @@ services:
     build:
       context: ../..
       dockerfile: infra/compose/Dockerfile
+      args:
+        SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     command: ["pnpm", "--filter", "@rakazo/worker", "start"]
     env_file:
       - ../../.env
@@ -161,10 +165,13 @@ services:
     build:
       context: ../..
       dockerfile: infra/compose/Dockerfile
+      args:
+        SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     command: ["pnpm", "--filter", "@rakazo/web", "preview", "--host", "0.0.0.0", "--port", "5173"]
     environment:
       API_PROXY_TARGET: http://api:3100
       SCREEN_PROXY_SECRET: ${SCREEN_PROXY_SECRET:?Set SCREEN_PROXY_SECRET in .env}
+      SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
       RAKAZO_HOST: ${RAKAZO_HOST:-localhost}
     ports:
       - "127.0.0.1:5173:5173"

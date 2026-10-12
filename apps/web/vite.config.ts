@@ -24,8 +24,19 @@ import {
   safeProxyHeaders,
   watchScreenAuthorization,
 } from "./src/screen-proxy.js";
+import {
+  assertStaticViewerTree,
+  isStaticViewerMethod,
+  readScreenViewerStaticFlag,
+  rejectStaticViewerMethod,
+  SCREEN_VIEWER_STATIC_DIR,
+  serveStaticViewer,
+  staticViewerRequestPath,
+} from "./src/screen-static.js";
 
 const webPort = Number(process.env.WEB_PORT ?? 5173);
+// Read with Vite's own client env loader so the server and the bundle agree on the flag.
+const CLIENT_ENV_PREFIXES = ["VITE_", "SCREEN_VIEWER_STATIC"];
 const DESKTOP_STACK_PROBE_PATH = "/.well-known/rakazo-desktop-stack";
 const DESKTOP_STACK_TOKEN_HEADER = "x-rakazo-desktop-stack-token";
 const screenLog = createServiceLogger({ service: "rakazo-web" });
@@ -70,6 +81,72 @@ function attachDesktopStackProbe(
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify(body));
   });
+}
+
+function attachStaticNovncViewer(
+  server: ViteDevServer | PreviewServer,
+  secret: string,
+  api: string,
+  root: string,
+) {
+  server.middlewares.use((req, res, next) => {
+    const filePath = staticViewerRequestPath(req.url);
+    if (filePath === null) {
+      next();
+      return;
+    }
+    if (!isStaticViewerMethod(req.method)) {
+      rejectStaticViewerMethod(res);
+      return;
+    }
+    const bindings = {
+      "screen.connection_id": randomUUID(),
+      "screen.policy": screenPolicy(req.url),
+    };
+    const serve = async () => {
+      const target = await resolveNovncTarget(req.url, secret, api, (reason) => {
+        screenLog.warn("screen.proxy.target_rejected", {
+          ...bindings,
+          "screen.transport": "http",
+          reason,
+        });
+      });
+      if (res.destroyed) return;
+      if (!target) {
+        res.statusCode = 403;
+        res.end("Invalid or expired screen capability");
+        return;
+      }
+      await serveStaticViewer(req, res, root, filePath, (errorCode) => {
+        screenLog.warn("screen.static.read_failed", { ...bindings, "error.code": errorCode });
+      });
+    };
+    serve().catch((error: unknown) => {
+      screenLog.warn("screen.static.failed", {
+        ...bindings,
+        "error.code": socketErrorCode(error),
+      });
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      res.statusCode = 404;
+      res.end("Not found");
+    });
+  });
+}
+
+function attachNovnc(
+  server: ViteDevServer | PreviewServer,
+  secret: string,
+  api: string,
+  staticViewerRoot: string | null,
+) {
+  if (staticViewerRoot) {
+    assertStaticViewerTree(staticViewerRoot);
+    attachStaticNovncViewer(server, secret, api, staticViewerRoot);
+  }
+  attachNovncProxy(server, secret, api);
 }
 
 function attachNovncProxy(server: ViteDevServer | PreviewServer, secret: string, api: string) {
@@ -413,7 +490,13 @@ export default defineConfig(({ mode }) => {
   const desktopStackToken =
     process.env.RAKAZO_DESKTOP_STACK_TOKEN ?? rootEnv.RAKAZO_DESKTOP_STACK_TOKEN ?? "";
   const imageTag = process.env.RAKAZO_IMAGE_TAG ?? rootEnv.RAKAZO_IMAGE_TAG ?? "edge";
+  const staticViewerRoot = readScreenViewerStaticFlag(
+    loadEnv(mode, import.meta.dirname, CLIENT_ENV_PREFIXES),
+  )
+    ? path.resolve(import.meta.dirname, SCREEN_VIEWER_STATIC_DIR)
+    : null;
   return {
+    envPrefix: CLIENT_ENV_PREFIXES,
     plugins: [
       react(),
       babel({ plugins: ["@lingui/babel-plugin-lingui-macro"] }),
@@ -441,8 +524,10 @@ export default defineConfig(({ mode }) => {
       },
       {
         name: "rakazo-novnc-proxy",
-        configureServer: (server) => attachNovncProxy(server, screenProxySecret(), api),
-        configurePreviewServer: (server) => attachNovncProxy(server, screenProxySecret(), api),
+        configureServer: (server) =>
+          attachNovnc(server, screenProxySecret(), api, staticViewerRoot),
+        configurePreviewServer: (server) =>
+          attachNovnc(server, screenProxySecret(), api, staticViewerRoot),
       },
     ],
     server: {

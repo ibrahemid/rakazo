@@ -13,7 +13,8 @@
         "ENCRYPTION_KEY",
         "GIT_SHA",
         "PUBLIC_POSTHOG_HOST",
-        "PUBLIC_POSTHOG_KEY"
+        "PUBLIC_POSTHOG_KEY",
+        "SCREEN_VIEWER_STATIC"
       ],
       "outputs": ["dist/**", "src/generated/**"]
     },
@@ -26,7 +27,7 @@
     },
     "dev": {
       "cache": false,
-      "env": ["PUBLIC_POSTHOG_HOST", "PUBLIC_POSTHOG_KEY"],
+      "env": ["PUBLIC_POSTHOG_HOST", "PUBLIC_POSTHOG_KEY", "SCREEN_VIEWER_STATIC"],
       "persistent": true
     }
   }

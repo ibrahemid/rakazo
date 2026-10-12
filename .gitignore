@@ -19,6 +19,7 @@ apps/**/data
 .tmp
 .DS_Store
 apps/web/dist
+apps/web/novnc-static
 apps/desktop/dist
 apps/desktop/out
 apps/desktop/e2e/screenshots

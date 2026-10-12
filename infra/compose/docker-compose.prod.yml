@@ -44,6 +44,7 @@ services:
       dockerfile: infra/compose/Dockerfile
       args:
         GIT_SHA: ${GIT_SHA:-}
+        SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     restart: unless-stopped
     command:
       - bash
@@ -121,6 +122,7 @@ services:
       dockerfile: infra/compose/Dockerfile
       args:
         GIT_SHA: ${GIT_SHA:-}
+        SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     restart: unless-stopped
     command: ["pnpm", "--filter", "@rakazo/worker", "start"]
     init: true
@@ -182,6 +184,7 @@ services:
       dockerfile: infra/compose/Dockerfile
       args:
         GIT_SHA: ${GIT_SHA:-}
+        SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     restart: unless-stopped
     command: ["pnpm", "--filter", "@rakazo/web", "preview", "--host", "0.0.0.0", "--port", "5173"]
     init: true
@@ -197,6 +200,7 @@ services:
       API_PROXY_TARGET: http://api:3100
       RAKAZO_HOST: ${RAKAZO_HOST:-app.example.com}
       SCREEN_PROXY_SECRET: ${SCREEN_PROXY_SECRET:?Set SCREEN_PROXY_SECRET in .env}
+      SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     expose:
       - "5173"
     networks:

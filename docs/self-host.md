@@ -165,6 +165,13 @@ it is equivalent to control of the Docker host. Docker sandboxes require `SANDBO
 (API, worker, supervisor). `SCREEN_PROXY_SECRET` signs browser-screen capabilities (API and web
 proxy). Keep both distinct from `BETTER_AUTH_SECRET`.
 
+`SCREEN_VIEWER_STATIC=1` (or `true`) serves the screen viewer page and its scripts from a noVNC
+copy inside the web app; only the screen WebSocket is proxied to the bot computer. Use it when an
+authenticating reverse proxy admits requests only with its session cookie, which the sandboxed
+viewer frame cannot send. The app image build bakes the tree into `apps/web/novnc-static` and the
+flag into the web bundle, so pass the same value as a build arg and at runtime. For `pnpm dev`,
+export it in the shell, then run `pnpm sandbox:build` and `pnpm --filter @rakazo/web novnc:sync`.
+
 New credentials use versioned AES-GCM with per-record salt and row-bound AAD. Legacy ciphertext stays readable.
 
 On a VPS, put TLS in front of `:5173` (or serve the web build behind your proxy) and set:

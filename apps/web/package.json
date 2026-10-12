@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "cross-env NODE_ENV=production vite build",
     "preview": "vite preview",
+    "novnc:sync": "rm -rf novnc-static && mkdir novnc-static && docker run --rm --entrypoint tar rakazo/computer:local -C /usr/share/novnc -cf - . | tar -x -C novnc-static",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --root ../.. apps/web/src",
     "e2e": "playwright test",

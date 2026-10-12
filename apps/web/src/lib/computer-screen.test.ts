@@ -111,4 +111,25 @@ describe("screenIframeSandbox", () => {
     );
     expect(screenIframeSandbox("http://127.0.0.1:5173/vnc.html")).toBeUndefined();
   });
+
+  it("keeps the opaque sandbox while SCREEN_VIEWER_STATIC is off", () => {
+    vi.stubGlobal("window", { location: { href: "http://localhost:5173/" } });
+    for (const env of [{}, { SCREEN_VIEWER_STATIC: "" }, { SCREEN_VIEWER_STATIC: "0" }]) {
+      expect(screenIframeSandbox("/novnc/session/view/token/embed.html", env)).toBe(
+        "allow-scripts allow-pointer-lock",
+      );
+    }
+  });
+
+  it("adds same-origin for /novnc/ paths while SCREEN_VIEWER_STATIC is on", () => {
+    vi.stubGlobal("window", { location: { href: "http://localhost:5173/" } });
+    for (const value of ["1", "true"]) {
+      const env = { SCREEN_VIEWER_STATIC: value };
+      expect(screenIframeSandbox("/novnc/session/view/token/embed.html", env)).toBe(
+        "allow-scripts allow-pointer-lock allow-same-origin",
+      );
+      expect(screenIframeSandbox("http://127.0.0.1:5173/vnc.html", env)).toBeUndefined();
+      expect(screenIframeSandbox(null, env)).toBeUndefined();
+    }
+  });
 });

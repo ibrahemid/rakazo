@@ -45,6 +45,7 @@ services:
       dockerfile: infra/compose/Dockerfile
       args:
         GIT_SHA: ${GIT_SHA:-}
+        SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
     restart: unless-stopped
     command: ["pnpm", "--filter", "@rakazo/sandbox-supervisor", "start"]
     init: true

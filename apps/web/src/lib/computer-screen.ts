@@ -1,3 +1,4 @@
+import { isScreenViewerStaticEnabled } from "./screen-viewer-flag";
 import { errorText } from "./user-error";
 
 export interface ComputerScreenResult {
@@ -43,12 +44,17 @@ export function embeddableScreenUrl(url: string | null): string | null {
   }
 }
 
-export function screenIframeSandbox(url: string | null) {
+export function screenIframeSandbox(
+  url: string | null,
+  env: { SCREEN_VIEWER_STATIC?: string } = import.meta.env,
+) {
   if (!url) return undefined;
   try {
-    return new URL(url, window.location.href).pathname.startsWith("/novnc/")
-      ? "allow-scripts allow-pointer-lock"
-      : undefined;
+    if (!new URL(url, window.location.href).pathname.startsWith("/novnc/")) return undefined;
+    // Proxied pages keep the CSP sandbox; static viewer pages are a trusted same-origin copy.
+    return isScreenViewerStaticEnabled(env.SCREEN_VIEWER_STATIC)
+      ? "allow-scripts allow-pointer-lock allow-same-origin"
+      : "allow-scripts allow-pointer-lock";
   } catch {
     return undefined;
   }

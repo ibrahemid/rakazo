@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_DEFAULT_UI_LOCALE?: string;
+  readonly SCREEN_VIEWER_STATIC?: string;
 }
 
 interface ImportMeta {
