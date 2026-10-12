@@ -35,7 +35,6 @@ type PublicFileRule =
   | { readonly kind: "ico" }
   | { readonly kind: "manifest" };
 
-/** Files under apps/web/public a brand replaces. A brand must provide every one. */
 export const BRANDABLE_PUBLIC_FILES: ReadonlyMap<string, PublicFileRule> = new Map([
   ["apple-touch-icon.png", { kind: "png", size: 180 }],
   ["favicon-16x16.png", { kind: "png", size: 16 }],
@@ -55,7 +54,6 @@ export const PUBLIC_FILE_CONTENT_TYPES = {
 
 export type BrandColors = { dark: Partial<ColorTokens>; light: Partial<ColorTokens> };
 
-/** locale -> source msgid -> msgstr */
 export type BrandStrings = Record<string, Record<string, string>>;
 
 export type Brand = {
@@ -63,11 +61,9 @@ export type Brand = {
   description: string;
   colors: BrandColors;
   strings: BrandStrings;
-  /** Allowlisted public file name -> absolute path inside the brand directory. */
   publicFiles: ReadonlyMap<string, string>;
 };
 
-/** Absolute brand directory from `RAKAZO_BRAND_DIR`, resolved against the repository root. */
 export function resolveBrandDir(env: NodeJS.ProcessEnv, repoRoot: string): string | undefined {
   const setting = readBrandDirSetting(env);
   return setting ? path.resolve(repoRoot, setting) : undefined;
@@ -132,7 +128,6 @@ function parseColorTheme(where: string, value: unknown): Partial<ColorTokens> {
   return theme;
 }
 
-/** Validates the parsed `brand.json`. */
 export function parseBrandConfig(raw: unknown): Pick<Brand, "name" | "description" | "colors"> {
   if (!isRecord(raw)) throw new BrandOverlayError("brand.json must be an object");
   rejectUnknownKeys("brand.json", raw, ["name", "description", "colors"]);
@@ -149,7 +144,6 @@ export function parseBrandConfig(raw: unknown): Pick<Brand, "name" | "descriptio
   };
 }
 
-/** Validates the parsed `strings.json`. */
 export function parseBrandStrings(raw: unknown): BrandStrings {
   if (!isRecord(raw)) throw new BrandOverlayError("strings.json must be an object");
   const strings: BrandStrings = {};
@@ -205,7 +199,6 @@ function validatePublicFile(name: string, rule: PublicFileRule, file: string) {
   }
 }
 
-/** Validates `public/` against the allowlist and returns name -> absolute path. */
 export function loadBrandPublicFiles(publicDir: string): ReadonlyMap<string, string> {
   if (!existsSync(publicDir) || !statSync(publicDir).isDirectory()) {
     throw new BrandOverlayError(`${publicDir} must be a directory`);
@@ -232,7 +225,6 @@ export function loadBrandPublicFiles(publicDir: string): ReadonlyMap<string, str
   return files;
 }
 
-/** Reads and validates a brand directory. */
 export function loadBrand(dir: string): Brand {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) {
     throw new BrandOverlayError(`${dir} is not a directory`);
@@ -270,7 +262,6 @@ function replaceTagOnce(html: string, pattern: RegExp, replacement: string, labe
   return replaceExactlyOnce(html, matches[0]!, replacement);
 }
 
-/** Brands the title, description, home screen title and theme-color fallbacks. */
 export function brandIndexHtml(html: string, brand: Brand | undefined): string {
   if (!brand) return html;
   const name = escapeHtml(brand.name);
@@ -313,7 +304,6 @@ function renderOverrideBlock(selector: string, entries: [keyof ColorTokens, stri
   return `${selector} {\n${lines.join("\n")}\n}`;
 }
 
-/** Override blocks to append after the stock tokens.css; empty when the brand sets no colours. */
 export function renderBrandTokenOverrides(colors: BrandColors): string {
   const darkEntries = Object.entries(colors.dark) as [keyof ColorTokens, string][];
   // `:root` in the dark block also matches in light mode, so the light block restates every
@@ -333,7 +323,6 @@ export function renderBrandTokenOverrides(colors: BrandColors): string {
   return blocks.join("\n\n");
 }
 
-/** The stock tokens.css followed by the brand's override blocks. */
 export function brandTokensCss(css: string, brand: Brand | undefined): string {
   if (!brand) return css;
   const overrides = renderBrandTokenOverrides(brand.colors);
@@ -344,13 +333,10 @@ const poFormatter = formatter({ lineNumbers: false });
 
 export type CatalogOverlay = {
   content: string;
-  /** Override msgids that match no entry in this catalog. */
   unmatched: string[];
-  /** msgids whose resulting message still contains the upstream product name. */
   leftovers: string[];
 };
 
-/** Applies exact-msgid overrides to one locale's `.po` catalog. */
 export async function overlayCatalog(
   content: string,
   locale: string,
@@ -380,10 +366,6 @@ export async function overlayCatalog(
   };
 }
 
-/**
- * Writes every `<sourceDir>/<locale>/messages.po` to `<outDir>` with the brand's overrides and
- * fails if an override matches nothing or a message still names the upstream product.
- */
 export async function writeBrandCatalogs(
   strings: BrandStrings,
   sourceDir: string,
@@ -425,7 +407,6 @@ export async function writeBrandCatalogs(
   }
 }
 
-/** Text files under `dir` (relative paths) that still contain the upstream product name. */
 export function findUpstreamNameLeftovers(dir: string): string[] {
   return readdirSync(dir, { recursive: true, encoding: "utf8" })
     .filter((file) => SCANNED_EXTENSIONS.has(path.extname(file)))

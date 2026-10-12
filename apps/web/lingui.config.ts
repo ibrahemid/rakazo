@@ -7,7 +7,6 @@ export default defineConfig({
   locales: ["en", "de", "ko", "tr", "hi", "pt-BR", "zh-CN", "es", "ru", "fr"],
   catalogs: [
     {
-      // The brand overlay compiles generated copies of the catalogs instead of the sources.
       path: readBrandDirSetting(process.env)
         ? `<rootDir>/${BRAND_BUILD_DIRNAME}/locales/{locale}/messages`
         : "<rootDir>/src/locales/{locale}/messages",

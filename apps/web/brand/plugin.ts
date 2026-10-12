@@ -29,7 +29,6 @@ function stockTokensCssPath() {
   return createRequire(path.join(WEB_ROOT, "package.json")).resolve("@rakazo/ui-tokens/css");
 }
 
-/** Redirects `src/locales/<locale>/messages.po` to the generated branded catalog. */
 function brandedCatalogPath(source: string, importer: string | undefined): string | undefined {
   if (!importer || !source.endsWith("messages.po")) return undefined;
   const relative = path.relative(SOURCE_CATALOGS, path.resolve(path.dirname(importer), source));
@@ -38,10 +37,6 @@ function brandedCatalogPath(source: string, importer: string | undefined): strin
   return path.join(BRAND_CATALOGS, relative);
 }
 
-/**
- * Build-time brand overlay. A no-op unless `RAKAZO_BRAND_DIR` names a brand directory
- * (see docs/branding.md).
- */
 export function brandOverlay(): Plugin {
   const brandDir = resolveBrandDir(process.env, REPO_ROOT);
   if (!brandDir) return { name: PLUGIN_NAME };
