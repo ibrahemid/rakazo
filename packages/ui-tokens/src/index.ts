@@ -1,3 +1,8 @@
+// Replaced by vite `define` when the web app is built with a brand; undeclared elsewhere.
+declare const __PRODUCT_NAME__: string | undefined;
+
+export const PRODUCT_NAME = typeof __PRODUCT_NAME__ === "string" ? __PRODUCT_NAME__ : "Rakazo";
+
 export const APPEARANCE_PREFERENCES = ["system", "light", "dark"] as const;
 
 export type AppearancePreference = (typeof APPEARANCE_PREFERENCES)[number];

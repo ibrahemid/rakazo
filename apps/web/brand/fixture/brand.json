@@ -1,0 +1,8 @@
+{
+  "name": "Acme Bots",
+  "description": "Bots that work for your team.",
+  "colors": {
+    "dark": { "background": "#101418", "primary": "#4f8cff" },
+    "light": { "background": "#f6f8fb", "primary": "#1f5fd1" }
+  }
+}

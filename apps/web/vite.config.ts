@@ -18,6 +18,7 @@ import type { PreviewServer, ViteDevServer } from "vite";
 import { defineConfig, loadEnv } from "vite";
 import { resolveScreenProxySecret } from "../../packages/core/src/secrets-guard.ts";
 import { createServiceLogger } from "../../packages/logging/src/env.ts";
+import { brandOverlay } from "./brand/plugin.js";
 import { collectNovncHtml, MAX_NOVNC_HTML_BYTES } from "./src/novnc-html.js";
 import {
   resolveNovncTarget,
@@ -498,6 +499,7 @@ export default defineConfig(({ mode }) => {
   return {
     envPrefix: CLIENT_ENV_PREFIXES,
     plugins: [
+      brandOverlay(),
       react(),
       babel({ plugins: ["@lingui/babel-plugin-lingui-macro"] }),
       lingui(),

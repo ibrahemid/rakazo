@@ -20,6 +20,8 @@ apps/**/data
 .DS_Store
 apps/web/dist
 apps/web/novnc-static
+apps/web/.brand
+/.brand/
 apps/desktop/dist
 apps/desktop/out
 apps/desktop/e2e/screenshots

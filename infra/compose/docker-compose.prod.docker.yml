@@ -46,6 +46,7 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-}
         SCREEN_VIEWER_STATIC: ${SCREEN_VIEWER_STATIC:-}
+        RAKAZO_BRAND_DIR: ${RAKAZO_BRAND_DIR:-}
     restart: unless-stopped
     command: ["pnpm", "--filter", "@rakazo/sandbox-supervisor", "start"]
     init: true

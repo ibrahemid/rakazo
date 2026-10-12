@@ -1,12 +1,16 @@
 import { defineConfig } from "@lingui/conf";
 import { formatter } from "@lingui/format-po";
+import { BRAND_BUILD_DIRNAME, readBrandDirSetting } from "./brand/env";
 
 export default defineConfig({
   sourceLocale: "en",
   locales: ["en", "de", "ko", "tr", "hi", "pt-BR", "zh-CN", "es", "ru", "fr"],
   catalogs: [
     {
-      path: "<rootDir>/src/locales/{locale}/messages",
+      // The brand overlay compiles generated copies of the catalogs instead of the sources.
+      path: readBrandDirSetting(process.env)
+        ? `<rootDir>/${BRAND_BUILD_DIRNAME}/locales/{locale}/messages`
+        : "<rootDir>/src/locales/{locale}/messages",
       include: ["src"],
       exclude: ["**/locales/**", "**/*.test.*"],
     },

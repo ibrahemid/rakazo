@@ -16,6 +16,8 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @rakazo/db generate
 ARG SCREEN_VIEWER_STATIC=
 ENV SCREEN_VIEWER_STATIC=$SCREEN_VIEWER_STATIC
+ARG RAKAZO_BRAND_DIR=
+ENV RAKAZO_BRAND_DIR=$RAKAZO_BRAND_DIR
 RUN RAKAZO_ALLOW_DEV_SECRETS=1 pnpm --filter @rakazo/web build
 COPY --from=novnc /usr/share/novnc /app/apps/web/novnc-static
 RUN install -d -m 750 -o node -g node /data /app/apps/web/node_modules/.vite-temp

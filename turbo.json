@@ -14,7 +14,8 @@
         "GIT_SHA",
         "PUBLIC_POSTHOG_HOST",
         "PUBLIC_POSTHOG_KEY",
-        "SCREEN_VIEWER_STATIC"
+        "SCREEN_VIEWER_STATIC",
+        "RAKAZO_BRAND_DIR"
       ],
       "outputs": ["dist/**", "src/generated/**"]
     },
