@@ -31,6 +31,7 @@ const CASES = [
 ];
 
 const METHODS = ["select-all", "keyboard", "mouse"] as const;
+const PARTIAL = { value: "test ad\n\ndas\nd", start: 2, end: 11 };
 const TOLERANCE = 1.5;
 const RTL_CHAR = /[\p{Script=Arabic}\p{Script=Hebrew}]/u;
 const LTR_CHAR = /\p{Script=Latin}/u;
@@ -274,13 +275,24 @@ async function selectText(
   field: Locator,
   method: (typeof METHODS)[number],
   layout: FieldLayout,
+  range: { start: number; end: number } | null,
 ) {
   if (method === "select-all") {
     await page.keyboard.press("ControlOrMeta+a");
     return;
   }
   if (method === "keyboard") {
-    await field.evaluate((textarea: HTMLTextAreaElement) => textarea.setSelectionRange(0, 0));
+    const start = range?.start ?? 0;
+    await field.evaluate(
+      (textarea: HTMLTextAreaElement, caret) => textarea.setSelectionRange(caret, caret),
+      start,
+    );
+    if (range) {
+      for (let step = start; step < range.end; step += 1) {
+        await page.keyboard.press("Shift+ArrowRight");
+      }
+      return;
+    }
     for (let step = 0; step <= layout.lines.length; step += 1) {
       await page.keyboard.press("Shift+ArrowDown");
     }
@@ -317,8 +329,10 @@ async function expectSelectionPaintMatchesText(
   engine: string,
   value: string,
   method: (typeof METHODS)[number],
+  range: { start: number; end: number } | null = null,
 ) {
-  const label = `${method}: ${JSON.stringify(value)}`;
+  const label = `${method}: ${JSON.stringify(value)}${range ? ` ${range.start}..${range.end}` : ""}`;
+  const expected = range ?? { start: 0, end: value.length };
   await field.fill(value);
   let previousBox = "";
   await expect
@@ -341,14 +355,18 @@ async function expectSelectionPaintMatchesText(
   if (!box) throw new Error("text field has no layout box");
   const shot = { clip: box, caret: "hide", animations: "disabled", scale: "css" } as const;
   const unselected = await page.screenshot(shot);
-  await selectText(page, field, method, await readLayout(field, box));
+  await selectText(page, field, method, await readLayout(field, box), range);
 
   const selection = await field.evaluate((textarea: HTMLTextAreaElement) => ({
     text: window.getSelection()?.toString() ?? "",
     start: textarea.selectionStart,
     end: textarea.selectionEnd,
   }));
-  expect(selection, label).toEqual({ text: value, start: 0, end: value.length });
+  expect(selection, label).toEqual({
+    text: value.slice(expected.start, expected.end),
+    start: expected.start,
+    end: expected.end,
+  });
 
   const selected = await page.screenshot(shot);
   const rows = await paintedRuns(page, selected, unselected);
@@ -409,6 +427,9 @@ async function checkField(
   });
   for (const value of CASES) {
     await expectSelectionPaintMatchesText(page, field, engine, value, method);
+  }
+  if (method === "keyboard") {
+    await expectSelectionPaintMatchesText(page, field, engine, PARTIAL.value, method, PARTIAL);
   }
 }
 
