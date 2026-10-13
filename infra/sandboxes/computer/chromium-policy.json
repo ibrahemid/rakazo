@@ -1,6 +1,7 @@
 {
   "BackgroundModeEnabled": false,
   "BrowserSignin": 0,
+  "BrowserNetworkTimeQueriesEnabled": false,
   "ComponentUpdatesEnabled": false,
   "DomainReliabilityAllowed": false,
   "MetricsReportingEnabled": false,

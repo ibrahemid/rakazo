@@ -9,6 +9,7 @@ describe("computer image Chromium background traffic", () => {
     const policy = JSON.parse(read("chromium-policy.json")) as Record<string, unknown>;
     expect(policy).toMatchObject({
       BackgroundModeEnabled: false,
+      BrowserNetworkTimeQueriesEnabled: false,
       ComponentUpdatesEnabled: false,
       DomainReliabilityAllowed: false,
       MetricsReportingEnabled: false,
