@@ -106,10 +106,10 @@ describe("screenIframeSandbox", () => {
 
   it("allows scripts and pointer lock only for /novnc/ paths", () => {
     vi.stubGlobal("window", { location: { href: "http://localhost:5173/" } });
-    expect(screenIframeSandbox("http://127.0.0.1:5173/novnc/vnc.html")).toBe(
+    expect(screenIframeSandbox("http://127.0.0.1:5173/novnc/vnc.html", {})).toBe(
       "allow-scripts allow-pointer-lock",
     );
-    expect(screenIframeSandbox("http://127.0.0.1:5173/vnc.html")).toBeUndefined();
+    expect(screenIframeSandbox("http://127.0.0.1:5173/vnc.html", {})).toBeUndefined();
   });
 
   it("keeps the opaque sandbox while SCREEN_VIEWER_STATIC is off", () => {
