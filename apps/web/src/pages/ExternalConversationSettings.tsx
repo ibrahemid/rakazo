@@ -151,6 +151,7 @@ export function ExternalConversationSettings({
             setSaved(false);
           }}
           placeholder={t`Engage when... Ignore...`}
+          dir="auto"
           rows={6}
           className="mt-2 w-full resize-y rounded-lg border border-border bg-transparent px-3 py-2.5 text-[13.5px] leading-5 text-foreground outline-none focus:border-muted-foreground"
         />

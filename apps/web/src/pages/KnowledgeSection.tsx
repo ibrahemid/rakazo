@@ -191,7 +191,6 @@ function MemoryDocumentList({
                 onChange={(event) => setDraft(event.target.value)}
                 rows={Math.min(16, Math.max(4, draft.split("\n").length + 1))}
                 className={fieldClass}
-                dir="auto"
               />
               <div className="mt-2 flex gap-2">
                 <Button
@@ -421,7 +420,6 @@ function AgentSkills({
             rows={Math.min(20, Math.max(8, draft.split("\n").length + 1))}
             readOnly={Boolean(open?.readOnly)}
             className={fieldClass}
-            dir="auto"
           />
           <div className="mt-2 flex items-center gap-2">
             {!open?.readOnly ? (
