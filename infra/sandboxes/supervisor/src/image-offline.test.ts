@@ -15,7 +15,7 @@ describe("application image package manager", () => {
     const prepare = lines.findIndex((line) =>
       line.includes(`corepack prepare ${packageManager} --activate`),
     );
-    const install = lines.findIndex((line) => line.startsWith("RUN pnpm install"));
+    const install = lines.findIndex((line) => /^RUN (--mount=\S+ )*pnpm install /.test(line));
     expect(home).toBeGreaterThanOrEqual(0);
     expect(prepare).toBeGreaterThan(home);
     expect(install).toBeGreaterThan(prepare);
