@@ -53,11 +53,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     pandoc \
     python3-openpyxl \
+    python3-websockets \
   && rm -rf /var/lib/apt/lists/* \
   && pdftotext -v \
   && pdfinfo -v \
   && pandoc --version \
   && python3 -c 'import openpyxl; print(openpyxl.__version__)' \
+  && python3 -c 'import websockets; print(websockets.__version__)' \
   && groupadd --gid 1000 rakazo \
   && useradd --uid 1000 --gid rakazo --create-home --shell /bin/bash rakazo \
   && mkdir -p /etc/rakazo/fluxbox \
@@ -115,6 +117,7 @@ COPY --from=capture-builder /build/librakazo-xcapture.so /usr/local/lib/librakaz
 COPY --chmod=755 rakazo-browser /usr/local/bin/rakazo-browser
 COPY --chmod=755 rakazo-focus-or-launch /usr/local/bin/rakazo-focus-or-launch
 COPY --chmod=755 rakazo-page-browser /usr/local/bin/rakazo-page-browser
+COPY --chmod=755 rakazo-geo /usr/local/bin/rakazo-geo
 COPY --chmod=644 rakazo-browser.desktop /usr/share/applications/rakazo-browser.desktop
 COPY --chmod=644 fluxbox.init /etc/rakazo/fluxbox/init
 COPY --chmod=644 fluxbox.apps /etc/rakazo/fluxbox/apps
@@ -129,7 +132,7 @@ RUN install -d -m 0755 /etc/chromium/policies/managed
 COPY --chmod=644 chromium-policy.json /etc/chromium/policies/managed/background-services.json
 # Strip CR so shebangs work even if the build context came from a CRLF checkout.
 RUN ldconfig \
-  && sed -i 's/\r$//' /usr/local/bin/rakazo-computer /usr/local/lib/rakazo-user-env.sh /usr/local/bin/rakazo-computer-control /usr/local/bin/rakazo-browser /usr/local/bin/rakazo-focus-or-launch /usr/local/bin/rakazo-page-browser \
+  && sed -i 's/\r$//' /usr/local/bin/rakazo-computer /usr/local/lib/rakazo-user-env.sh /usr/local/bin/rakazo-computer-control /usr/local/bin/rakazo-browser /usr/local/bin/rakazo-focus-or-launch /usr/local/bin/rakazo-page-browser /usr/local/bin/rakazo-geo \
     /etc/rakazo/fluxbox/init /etc/rakazo/fluxbox/apps /etc/rakazo/fluxbox/menu \
     /etc/profile.d/rakazo-local-bin.sh
 EXPOSE 7070 6080 6081 6082 6083 6084 6085 6086 6087 6088 6089 6090 6091 6092 6093 6094 6095

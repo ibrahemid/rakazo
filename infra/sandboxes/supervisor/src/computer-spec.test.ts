@@ -38,6 +38,7 @@ import {
   publishedLoopbackControlHostPort,
   resolveComputerControlEndpoint,
   resolveComputerEgressMode,
+  resolveComputerGeolocation,
   resolveScreenNetworkMode,
   resolveScreenPublishTarget,
   resolveSpaceComputerLimit,
@@ -1670,6 +1671,98 @@ describe("computer resource limits", () => {
 
   it("parses byte counts without a unit suffix", () => {
     expect(parseMemoryBytes("X", "1073741824")).toBe(1024 ** 3);
+  });
+});
+
+describe("computer geolocation", () => {
+  const KEY = "RAKAZO_COMPUTER_GEOLOCATION";
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[KEY];
+    delete process.env[KEY];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY];
+    else process.env[KEY] = saved;
+  });
+
+  const createInput = {
+    name: "rakazo-bot-x",
+    image: "rakazo/computer:local",
+    botId: "bot-x",
+    spaceId: "ws",
+    homePath: "/var/rakazo/homes/bot-x",
+  };
+  const geolocationEnv = () =>
+    containerCreateOptions(createInput).Env.filter((entry) => entry.startsWith(`${KEY}=`));
+
+  it("is off when unset or blank", () => {
+    expect(resolveComputerGeolocation(undefined)).toBeUndefined();
+    expect(resolveComputerGeolocation("")).toBeUndefined();
+    expect(resolveComputerGeolocation("   ")).toBeUndefined();
+    expect(geolocationEnv()).toEqual([]);
+    process.env[KEY] = "";
+    expect(geolocationEnv()).toEqual([]);
+  });
+
+  it("parses latitude and longitude with a 50 m default accuracy", () => {
+    expect(resolveComputerGeolocation("52.3676,4.9041")).toEqual({
+      latitude: 52.3676,
+      longitude: 4.9041,
+      accuracy: 50,
+    });
+    expect(resolveComputerGeolocation(" -33.8688 , 151.2093 , 12.5 ")).toEqual({
+      latitude: -33.8688,
+      longitude: 151.2093,
+      accuracy: 12.5,
+    });
+    expect(resolveComputerGeolocation("90,-180")).toEqual({
+      latitude: 90,
+      longitude: -180,
+      accuracy: 50,
+    });
+  });
+
+  it("passes the normalized value into the computer environment", () => {
+    process.env[KEY] = " 40.7128 , -74.006 ";
+    expect(geolocationEnv()).toEqual([`${KEY}=40.7128,-74.006,50`]);
+    process.env[KEY] = "+1e1,-.5,250";
+    expect(geolocationEnv()).toEqual([`${KEY}=10,-0.5,250`]);
+  });
+
+  it("rejects malformed values naming the variable", () => {
+    for (const value of [
+      "52.3",
+      "52.3,4.9,10,1",
+      "52.3,",
+      ",4.9",
+      "abc,4.9",
+      "0x10,4.9",
+      "52.3,4.9,",
+      "1_0,4.9",
+      "NaN,4.9",
+      "Infinity,4.9",
+      "52.3;4.9",
+    ]) {
+      expect(() => resolveComputerGeolocation(value), value).toThrow(/RAKAZO_COMPUTER_GEOLOCATION/);
+    }
+  });
+
+  it("rejects out-of-range coordinates and non-positive accuracy", () => {
+    expect(() => resolveComputerGeolocation("90.0001,0")).toThrow(/latitude/);
+    expect(() => resolveComputerGeolocation("-91,0")).toThrow(/latitude/);
+    expect(() => resolveComputerGeolocation("0,180.5")).toThrow(/longitude/);
+    expect(() => resolveComputerGeolocation("0,-181")).toThrow(/longitude/);
+    expect(() => resolveComputerGeolocation("0,0,0")).toThrow(/accuracy/);
+    expect(() => resolveComputerGeolocation("0,0,-5")).toThrow(/accuracy/);
+    expect(() => resolveComputerGeolocation("0,0,1e999")).toThrow(/accuracy/);
+  });
+
+  it("fails container creation on an invalid value instead of dropping it", () => {
+    process.env[KEY] = "200,0";
+    expect(() => containerCreateOptions(createInput)).toThrow(/RAKAZO_COMPUTER_GEOLOCATION/);
   });
 });
 

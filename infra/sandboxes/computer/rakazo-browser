@@ -401,6 +401,30 @@ if [ -n "${LD_PRELOAD:-}" ] && LD_PRELOAD= id -un >/dev/null 2>&1; then
   unset LD_PRELOAD
 fi
 FLAGS="--test-type --no-sandbox --disable-dev-shm-usage --disable-gpu --enable-unsafe-swiftshader --no-first-run --no-default-browser-check --disable-session-crashed-bubble --hide-crash-restore-bubble --password-store=basic --restore-last-session --start-maximized --remote-debugging-address=127.0.0.1 --remote-debugging-port=$DEBUG_PORT --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings"
+start_geolocation_helper() {
+  helper="$(dirname "$0")/rakazo-geo"
+  if [ ! -x "$helper" ]; then
+    helper=$(command -v rakazo-geo) || return 1
+  fi
+  mkdir -p /tmp/rakazo || return 1
+  pidfile="/tmp/rakazo/geo-$DEBUG_PORT.pid"
+  pid=$(cat "$pidfile" 2>/dev/null || true)
+  case "$pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if kill -0 "$pid" 2>/dev/null && cmdline_text "$pid" | grep -q 'rakazo-geo'; then
+        return 0
+      fi
+      ;;
+  esac
+  (
+    nohup "$helper" "$DEBUG_PORT" >"/tmp/rakazo/geo-$DEBUG_PORT.log" 2>&1 </dev/null &
+    echo "$!" >"$pidfile"
+  )
+}
+if [ -n "${RAKAZO_COMPUTER_GEOLOCATION:-}" ]; then
+  start_geolocation_helper || echo "rakazo-browser: geolocation helper did not start" >&2
+fi
 if [ "$USER_DATA_DIR_SET" -eq 0 ]; then
   exec "$BIN" $FLAGS --user-data-dir="$PROFILE" "$@"
 fi

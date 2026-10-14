@@ -41,6 +41,7 @@ import {
   publishedLoopbackControlHostPort,
   resolveComputerControlEndpoint,
   resolveComputerEgressMode,
+  resolveComputerGeolocation,
   resolveScreenNetworkMode,
   resolveScreenPublishTarget,
   resolveSpaceComputerLimit,
@@ -978,11 +979,12 @@ app.delete("/computers/:id", async (c) => {
 
 function startSupervisor() {
   const logger = createRootLogger(SERVICE_NAMES.supervisor);
-  // Resolve the ceilings before binding the port. They are otherwise parsed inside
+  // Resolve the ceilings and geolocation before binding the port. They are otherwise parsed inside
   // containerCreateOptions, so a malformed RAKAZO_COMPUTER_* value would let the supervisor start
   // and pass its healthcheck, then fail the first POST /computers with a 500 that reads like a
   // Docker problem. Failing here names the variable while the deployment is still coming up.
   computerResourceLimits();
+  resolveComputerGeolocation();
   if (computerEgressMode === "restricted") {
     // Enforcement is host-side (DOCKER-USER/INPUT on rakazo-c* bridges); the flag
     // only names the interfaces. Without the host script, egress stays open.

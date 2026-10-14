@@ -87,6 +87,15 @@ Docker computer topology:
 Set any of them to `0`, `none` or `unlimited` to remove that ceiling. A malformed value fails the
 supervisor at startup naming the variable, rather than surfacing later as a failed bot.
 
+### Bot computer geolocation
+
+The computer's Chromium has no location provider, so sites that call `navigator.geolocation` get
+no position. Set `RAKAZO_COMPUTER_GEOLOCATION="<lat>,<lng>[,<accuracy_m>]"`, for example
+`52.3676,4.9041,50`, to grant geolocation to every site and report that fixed position. Latitude is
+-90 to 90, longitude -180 to 180, and accuracy defaults to 50 metres. Leave it empty to turn the
+override off. A malformed value fails the supervisor at startup. A changed value reaches a computer
+when the supervisor next creates it. A resumed computer keeps the value it started with.
+
 ### Restricted computer egress
 
 Docker computers have full outbound access by default — the public internet plus the Docker

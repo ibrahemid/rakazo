@@ -143,6 +143,67 @@ export function computerResourceLimits() {
   };
 }
 
+export interface ComputerGeolocation {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+}
+
+const GEOLOCATION_ENV = "RAKAZO_COMPUTER_GEOLOCATION";
+const DEFAULT_GEOLOCATION_ACCURACY_M = 50;
+const DECIMAL_PATTERN = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+
+function parseGeolocationNumber(label: string, raw: string): number {
+  const text = raw.trim();
+  const value = Number(text);
+  if (!DECIMAL_PATTERN.test(text) || !Number.isFinite(value)) {
+    throw new Error(
+      `${GEOLOCATION_ENV} ${label} must be a finite decimal number, received "${raw}"`,
+    );
+  }
+  return value;
+}
+
+/** Must accept exactly what the in-image helper infra/sandboxes/computer/rakazo-geo accepts. */
+export function resolveComputerGeolocation(
+  value = process.env[GEOLOCATION_ENV],
+): ComputerGeolocation | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parts = value.split(",");
+  if (parts.length !== 2 && parts.length !== 3) {
+    throw new Error(`${GEOLOCATION_ENV} must be "<lat>,<lng>[,<accuracy_m>]", received "${value}"`);
+  }
+  const [latitudeRaw = "", longitudeRaw = "", accuracyRaw] = parts;
+  const latitude = parseGeolocationNumber("latitude", latitudeRaw);
+  if (latitude < -90 || latitude > 90) {
+    throw new Error(`${GEOLOCATION_ENV} latitude must be between -90 and 90, received "${value}"`);
+  }
+  const longitude = parseGeolocationNumber("longitude", longitudeRaw);
+  if (longitude < -180 || longitude > 180) {
+    throw new Error(
+      `${GEOLOCATION_ENV} longitude must be between -180 and 180, received "${value}"`,
+    );
+  }
+  const accuracy =
+    accuracyRaw === undefined
+      ? DEFAULT_GEOLOCATION_ACCURACY_M
+      : parseGeolocationNumber("accuracy", accuracyRaw);
+  if (accuracy <= 0) {
+    throw new Error(
+      `${GEOLOCATION_ENV} accuracy must be greater than 0 metres, received "${value}"`,
+    );
+  }
+  return { latitude, longitude, accuracy };
+}
+
+function computerGeolocationEnv(): string[] {
+  const geolocation = resolveComputerGeolocation();
+  if (!geolocation) return [];
+  return [
+    `${GEOLOCATION_ENV}=${geolocation.latitude},${geolocation.longitude},${geolocation.accuracy}`,
+  ];
+}
+
 export function resolveScreenNetworkMode(value: string | undefined): ScreenNetworkMode {
   if (!value || value === "published") return "published";
   if (value === "internal" || value === "isolated") return value;
@@ -336,6 +397,7 @@ export function containerCreateOptions(input: ComputerCreateInput) {
       "NPM_CONFIG_PREFIX=/home/rakazo/.local",
       "PIP_USER=1",
       ...(input.controlToken ? [`RAKAZO_COMPUTER_CONTROL_TOKEN=${input.controlToken}`] : []),
+      ...computerGeolocationEnv(),
     ],
     Labels: {
       "rakazo.managed": "true",
