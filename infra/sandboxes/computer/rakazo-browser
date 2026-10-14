@@ -401,6 +401,10 @@ if [ -n "${LD_PRELOAD:-}" ] && LD_PRELOAD= id -un >/dev/null 2>&1; then
   unset LD_PRELOAD
 fi
 FLAGS="--test-type --no-sandbox --disable-dev-shm-usage --disable-gpu --enable-unsafe-swiftshader --no-first-run --no-default-browser-check --disable-session-crashed-bubble --hide-crash-restore-bubble --password-store=basic --restore-last-session --start-maximized --remote-debugging-address=127.0.0.1 --remote-debugging-port=$DEBUG_PORT --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings"
+# Startup requests to Google that no policy turns off: the on-device model manifest check, AI Mode
+# eligibility and Autofill server predictions have switches. Gaia account listing and the cloud policy
+# invalidation tokens over GCM have none, so their endpoints point at a closed loopback port.
+FLAGS="$FLAGS --optimization-guide-manifest-override=/dev/null --disable-features=AimEnabled,AutofillServerCommunication --gaia-config-contents={\"urls\":{\"list_accounts_url\":{\"url\":\"http://127.0.0.1:9/ListAccounts\"}}} --gcm-checkin-url=http://127.0.0.1:9/checkin --gcm-registration-url=http://127.0.0.1:9/register3 --gcm-mcs-endpoint=https://127.0.0.1:9"
 start_geolocation_helper() {
   helper="$(dirname "$0")/rakazo-geo"
   if [ ! -x "$helper" ]; then

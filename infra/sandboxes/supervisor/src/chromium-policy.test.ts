@@ -1,8 +1,45 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
 
 const computerDir = new URL("../../computer/", import.meta.url);
 const read = (name: string) => readFileSync(new URL(name, computerDir), "utf8");
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function launchArgs(): string[] {
+  const root = mkdtempSync(path.join(tmpdir(), "rakazo-browser-flags-"));
+  roots.push(root);
+  const bin = path.join(root, "bin");
+  const record = path.join(root, "argv");
+  mkdirSync(bin);
+  const chromium = path.join(bin, "chromium");
+  writeFileSync(
+    chromium,
+    `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done > '${record}'\n`,
+  );
+  chmodSync(chromium, 0o755);
+  const result = spawnSync(
+    "sh",
+    [
+      fileURLToPath(new URL("rakazo-browser", computerDir)),
+      `--user-data-dir=${path.join(root, "profile")}`,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: path.join(root, "home"), DISPLAY: ":7" },
+    },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  return readFileSync(record, "utf8").split("\n").filter(Boolean);
+}
 
 describe("computer image Chromium background traffic", () => {
   it("installs a managed policy that turns off Google background services", () => {
@@ -44,5 +81,24 @@ describe("computer image Chromium background traffic", () => {
     ]) {
       expect(flagsLine).toContain(flag);
     }
+  });
+
+  it("points the startup Google requests no policy covers away from Google", () => {
+    const args = launchArgs();
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "--optimization-guide-manifest-override=/dev/null",
+        "--disable-features=AimEnabled,AutofillServerCommunication",
+        "--gcm-checkin-url=http://127.0.0.1:9/checkin",
+        "--gcm-registration-url=http://127.0.0.1:9/register3",
+        "--gcm-mcs-endpoint=https://127.0.0.1:9",
+      ]),
+    );
+    const prefix = "--gaia-config-contents=";
+    const gaia = args.filter((arg) => arg.startsWith(prefix));
+    expect(gaia).toHaveLength(1);
+    expect(JSON.parse(gaia[0]?.slice(prefix.length) ?? "")).toEqual({
+      urls: { list_accounts_url: { url: "http://127.0.0.1:9/ListAccounts" } },
+    });
   });
 });
