@@ -2317,6 +2317,16 @@ function isProviderTimeout(error: unknown): boolean {
 /** Only provider availability failures may advance the user's explicit chain. */
 export function isRetryableProviderUnavailable(error: unknown): boolean {
   const { text, statuses } = errorFacts(error);
+  if (statuses.has(400) || statuses.has(401)) return false;
+  // Kimi For Coding reports an exhausted usage window as HTTP 403. errorFacts lowercases text.
+  if (
+    statuses.has(403) &&
+    /you['\u2019]ve reached your (?:5-hour usage limit|weekly \(7-day\) usage limit|monthly usage limit|usage limit for this billing cycle)/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
   if (
     [400, 401, 403].some((status) => statuses.has(status)) ||
     /\b(?:http(?:\s+status(?:\s+code)?)?|status(?:\s+code)?|error\s+code)\s*[:=]?\s*(?:400|401|403)\b/.test(
@@ -2384,6 +2394,19 @@ function contextImageCount(context: Context): number {
   }, 0);
 }
 
+/**
+ * Same rule as the primary model (modelAcceptsImageInput): the catalog's input
+ * modalities decide for native providers, and the connection's acceptsImages flag
+ * only applies to OpenAI-compatible models, whose runtime model is built from it.
+ */
+function fallbackSeesImages(candidate: RuntimeModelTarget): boolean {
+  if (!candidate.model.input.includes("image")) return false;
+  return (
+    candidate.config.provider !== OPENAI_COMPATIBLE_PROVIDER_ID ||
+    candidate.config.acceptsImages !== false
+  );
+}
+
 function fallbackSupportsContext(
   candidate: RuntimeModelTarget,
   context: TranscriptContext,
@@ -2407,7 +2430,7 @@ function fallbackSupportsContext(
   const imageCount = contextImageCount(context);
   if (
     (imageCount > 0 || tools.some((tool) => IMAGE_RETURNING_COMPUTER_TOOLS.has(tool.name))) &&
-    (!candidate.model.input.includes("image") || candidate.config.acceptsImages === false)
+    !fallbackSeesImages(candidate)
   ) {
     return false;
   }
