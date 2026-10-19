@@ -14,6 +14,10 @@ const SENSITIVE_FORWARD_HEADERS = new Set([
   "proxy-authorization",
 ]);
 
+export function screenPolicy(url: string | undefined) {
+  return url?.startsWith("/novnc/session/control/") ? "control" : "view";
+}
+
 /** Fail closed when the authoritative lifecycle check is unavailable. */
 export async function resolveNovncTarget(
   url: string | undefined,

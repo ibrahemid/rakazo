@@ -1,4 +1,4 @@
-import { isScreenViewerStaticEnabled } from "./screen-viewer-flag";
+import { isScreenViewerStaticEnabled } from "@rakazo/core/screen-viewer-flag";
 import { errorText } from "./user-error";
 
 export interface ComputerScreenResult {

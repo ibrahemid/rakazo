@@ -587,6 +587,7 @@ export async function createApp(
       webOrigin: env.webOrigin,
       privacyPolicyUrl: env.privacyPolicyUrl,
       screenProxySecret: env.screenProxySecret,
+      screenViewerStatic: env.screenViewerStatic,
       sandboxProvider: env.sandboxProvider,
       gitSha: env.gitSha,
       updaterUrl: env.updaterUrl,

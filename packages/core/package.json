@@ -43,6 +43,11 @@
       "types": "./src/node/screen-capability.ts",
       "development": "./src/node/screen-capability.ts",
       "default": "./src/node/screen-capability.ts"
+    },
+    "./screen-viewer-flag": {
+      "types": "./src/screen-viewer-flag.ts",
+      "development": "./src/screen-viewer-flag.ts",
+      "default": "./src/screen-viewer-flag.ts"
     }
   },
   "scripts": {

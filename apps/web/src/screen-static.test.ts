@@ -3,9 +3,19 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  issueScreenCapability,
+  openScreenCapability,
+  resetRemoteScreenCapabilityReuse,
+  SCREEN_TARGET_ENDPOINT,
+  withEmbedViewer,
+} from "@rakazo/core/node/screen-capability";
+import type { Mock } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { StaticViewerLog } from "./screen-static.js";
 import {
   assertStaticViewerTree,
+  createStaticViewerMiddleware,
   readScreenViewerStaticFlag,
   resolveStaticViewerPath,
   ScreenViewerStaticError,
@@ -17,6 +27,36 @@ import {
 const EMBED_HTML = "<!DOCTYPE html><title>viewer</title>";
 const RFB_JS = "export default class RFB {}";
 const SESSION = "/novnc/session/view/1700000000000.token_-abc";
+
+function requestServer(port: number, method: string, rawPath: string) {
+  return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>(
+    (resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port, method, path: rawPath }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
+        );
+        res.on("error", reject);
+      });
+      req.on("error", reject);
+      req.end();
+    },
+  );
+}
+
+async function listen(server: http.Server) {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return (server.address() as AddressInfo).port;
+}
+
+async function close(server: http.Server) {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
 
 describe("SCREEN_VIEWER_STATIC flag", () => {
   it("is off unless set to 1 or true", () => {
@@ -127,35 +167,15 @@ describe("serveStaticViewer", () => {
       }
       void serveStaticViewer(req, res, root, filePath);
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    port = (server.address() as AddressInfo).port;
+    port = await listen(server);
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await close(server);
     await rm(base, { recursive: true, force: true });
   });
 
-  function request(method: string, rawPath: string) {
-    return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>(
-      (resolve, reject) => {
-        const req = http.request({ host: "127.0.0.1", port, method, path: rawPath }, (res) => {
-          const chunks: Buffer[] = [];
-          res.on("data", (chunk: Buffer) => chunks.push(chunk));
-          res.on("end", () =>
-            resolve({
-              status: res.statusCode ?? 0,
-              headers: res.headers,
-              body: Buffer.concat(chunks).toString("utf8"),
-            }),
-          );
-          res.on("error", reject);
-        });
-        req.on("error", reject);
-        req.end();
-      },
-    );
-  }
+  const request = (method: string, rawPath: string) => requestServer(port, method, rawPath);
 
   it("serves embed.html with the same-origin header set", async () => {
     const response = await request("GET", `${SESSION}/embed.html?autoconnect=true&path=websockify`);
@@ -220,6 +240,150 @@ describe("serveStaticViewer", () => {
     const response = await request("POST", `${SESSION}/embed.html`);
     expect(response.status).toBe(405);
     expect(response.headers.allow).toBe("GET, HEAD");
+  });
+});
+
+describe("createStaticViewerMiddleware", () => {
+  const secret = "fake-screen-secret";
+  const scope = {
+    botId: "bot",
+    computerId: "computer",
+    botGeneration: 0,
+    computerGeneration: 0,
+    controlLeaseId: null,
+  };
+  const remoteScreen =
+    "https://computer-1.up.railway.app/vnc.html?autoconnect=true&resize=scale&path=websockify%3Ftoken%3Dfake-socket-token&view_only=true";
+  let base: string;
+  let authority: http.Server;
+  let viewer: http.Server;
+  let viewerPort: number;
+  let authorityUrl: string;
+  let authorityPaths: string[];
+  let fallthrough: number;
+  let log: { warn: Mock<StaticViewerLog["warn"]> };
+
+  beforeAll(async () => {
+    base = await mkdtemp(path.join(os.tmpdir(), "screen-static-middleware-"));
+    const root = path.join(base, "novnc-static");
+    await mkdir(path.join(root, "core"), { recursive: true });
+    await writeFile(path.join(root, "embed.html"), EMBED_HTML);
+    await writeFile(path.join(root, "core", "rfb.js"), RFB_JS);
+    authority = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        const { path: capabilityPath } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        authorityPaths.push(capabilityPath);
+        const capability =
+          req.url === SCREEN_TARGET_ENDPOINT && req.headers.authorization === `Bearer ${secret}`
+            ? openScreenCapability(capabilityPath, secret)
+            : null;
+        if (!capability) {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(capability.target));
+      });
+    });
+    authorityUrl = `http://127.0.0.1:${await listen(authority)}`;
+    const middleware = (api: string) => createStaticViewerMiddleware(secret, api, root, log);
+    viewer = http.createServer((req, res) => {
+      const api = req.headers["x-test-authority"] === "down" ? "http://127.0.0.1:9" : authorityUrl;
+      middleware(api)(req, res, () => {
+        fallthrough += 1;
+        res.statusCode = 418;
+        res.end();
+      });
+    });
+    viewerPort = await listen(viewer);
+  });
+
+  beforeEach(() => {
+    authorityPaths = [];
+    fallthrough = 0;
+    log = { warn: vi.fn<StaticViewerLog["warn"]>() };
+    resetRemoteScreenCapabilityReuse();
+  });
+
+  afterAll(async () => {
+    await close(viewer);
+    await close(authority);
+    await rm(base, { recursive: true, force: true });
+  });
+
+  function remoteCapability() {
+    return new URL(
+      issueScreenCapability(withEmbedViewer(remoteScreen), secret, "https://app.example", scope),
+    );
+  }
+
+  function requestViewer(rawPath: string, headers: http.OutgoingHttpHeaders = {}) {
+    return new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port: viewerPort, method: "GET", path: rawPath, headers },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          res.on("end", () =>
+            resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }),
+          );
+          res.on("error", reject);
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  it("serves the app's embed viewer and assets for a remote computer capability", async () => {
+    const capability = remoteCapability();
+    expect(capability.pathname).toMatch(/\/embed\.html$/);
+    const page = await requestViewer(`${capability.pathname}${capability.search}`);
+    expect(page).toEqual({ status: 200, body: EMBED_HTML });
+    const script = await requestViewer(capability.pathname.replace("/embed.html", "/core/rfb.js"));
+    expect(script).toEqual({ status: 200, body: RFB_JS });
+    expect(authorityPaths).toEqual([
+      `${capability.pathname}${capability.search}`,
+      capability.pathname.replace("/embed.html", "/core/rfb.js"),
+    ]);
+    expect(fallthrough).toBe(0);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tampered capability before reading the tree", async () => {
+    const capability = remoteCapability();
+    const tampered = capability.pathname.replace(/\.(.)/, (_, c) => `.${c === "a" ? "b" : "a"}`);
+    expect(await requestViewer(tampered)).toEqual({
+      status: 403,
+      body: "Invalid or expired screen capability",
+    });
+    expect(fallthrough).toBe(0);
+    expect(log.warn).toHaveBeenCalledWith(
+      "screen.proxy.target_rejected",
+      expect.objectContaining({ reason: "authority_rejected" }),
+    );
+  });
+
+  it("fails closed when the authority is unavailable", async () => {
+    const capability = remoteCapability();
+    expect(await requestViewer(capability.pathname, { "x-test-authority": "down" })).toEqual({
+      status: 403,
+      body: "Invalid or expired screen capability",
+    });
+    expect(fallthrough).toBe(0);
+    expect(log.warn).toHaveBeenCalledWith(
+      "screen.proxy.target_rejected",
+      expect.objectContaining({ reason: "authority_unavailable" }),
+    );
+  });
+
+  it("passes requests outside the session route to the next handler", async () => {
+    expect(await requestViewer("/novnc/vnc.html")).toEqual({ status: 418, body: "" });
+    expect(fallthrough).toBe(1);
+    expect(authorityPaths).toEqual([]);
   });
 });
 

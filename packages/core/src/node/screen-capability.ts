@@ -89,6 +89,22 @@ export function isLoopbackScreenTarget(url: string) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
+/**
+ * Swap a remote provider's stock noVNC page for the app-served viewer. The sealed
+ * `path` still carries the provider socket, so only the WebSocket reaches the sandbox.
+ */
+export function withEmbedViewer(url: string) {
+  const target = new URL(url);
+  if (
+    (target.protocol !== "https:" && target.protocol !== "http:") ||
+    isLoopbackScreenTarget(url) ||
+    target.pathname !== "/vnc.html"
+  )
+    return url;
+  target.pathname = "/embed.html";
+  return target.toString();
+}
+
 /** Drop cached remote seals. Tests use this so issuance order cannot leak between cases. */
 export function resetRemoteScreenCapabilityReuse() {
   remoteScreenSeals.clear();

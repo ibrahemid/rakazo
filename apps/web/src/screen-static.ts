@@ -1,10 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { constants, statSync } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { lstat, open, realpath } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { isScreenViewerStaticEnabled, SCREEN_VIEWER_STATIC_ENV } from "./lib/screen-viewer-flag.js";
+import {
+  isScreenViewerStaticEnabled,
+  SCREEN_VIEWER_STATIC_ENV,
+} from "@rakazo/core/screen-viewer-flag";
+import { resolveNovncTarget, screenPolicy } from "./screen-proxy.js";
 
 export const SCREEN_VIEWER_STATIC_DIR = "novnc-static";
 export const STATIC_VIEWER_REQUIRED_FILES = ["embed.html", "core/rfb.js"] as const;
@@ -189,4 +194,61 @@ export async function serveStaticViewer(
     onReadError?.(errorCode(error));
     res.destroy();
   }
+}
+
+export interface StaticViewerLog {
+  warn(message: string, bindings?: Record<string, unknown>): void;
+}
+
+export function createStaticViewerMiddleware(
+  secret: string,
+  api: string,
+  root: string,
+  log: StaticViewerLog,
+) {
+  return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const filePath = staticViewerRequestPath(req.url);
+    if (filePath === null) {
+      next();
+      return;
+    }
+    if (!isStaticViewerMethod(req.method)) {
+      rejectStaticViewerMethod(res);
+      return;
+    }
+    const bindings = {
+      "screen.connection_id": randomUUID(),
+      "screen.policy": screenPolicy(req.url),
+    };
+    const serve = async () => {
+      const target = await resolveNovncTarget(req.url, secret, api, (reason) => {
+        log.warn("screen.proxy.target_rejected", {
+          ...bindings,
+          "screen.transport": "http",
+          reason,
+        });
+      });
+      if (res.destroyed) return;
+      if (!target) {
+        res.statusCode = 403;
+        res.end("Invalid or expired screen capability");
+        return;
+      }
+      await serveStaticViewer(req, res, root, filePath, (code) => {
+        log.warn("screen.static.read_failed", { ...bindings, "error.code": code });
+      });
+    };
+    serve().catch((error: unknown) => {
+      log.warn("screen.static.failed", {
+        ...bindings,
+        "error.code": errorCode(error),
+      });
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      res.statusCode = 404;
+      res.end("Not found");
+    });
+  };
 }

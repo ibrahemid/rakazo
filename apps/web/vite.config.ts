@@ -23,16 +23,14 @@ import { collectNovncHtml, MAX_NOVNC_HTML_BYTES } from "./src/novnc-html.js";
 import {
   resolveNovncTarget,
   safeProxyHeaders,
+  screenPolicy,
   watchScreenAuthorization,
 } from "./src/screen-proxy.js";
 import {
   assertStaticViewerTree,
-  isStaticViewerMethod,
+  createStaticViewerMiddleware,
   readScreenViewerStaticFlag,
-  rejectStaticViewerMethod,
   SCREEN_VIEWER_STATIC_DIR,
-  serveStaticViewer,
-  staticViewerRequestPath,
 } from "./src/screen-static.js";
 
 const webPort = Number(process.env.WEB_PORT ?? 5173);
@@ -41,10 +39,6 @@ const CLIENT_ENV_PREFIXES = ["VITE_", "SCREEN_VIEWER_STATIC"];
 const DESKTOP_STACK_PROBE_PATH = "/.well-known/rakazo-desktop-stack";
 const DESKTOP_STACK_TOKEN_HEADER = "x-rakazo-desktop-stack-token";
 const screenLog = createServiceLogger({ service: "rakazo-web" });
-
-function screenPolicy(url: string | undefined) {
-  return url?.startsWith("/novnc/session/control/") ? "control" : "view";
-}
 
 function socketErrorCode(error: unknown) {
   const code = (error as NodeJS.ErrnoException | null)?.code;
@@ -84,59 +78,6 @@ function attachDesktopStackProbe(
   });
 }
 
-function attachStaticNovncViewer(
-  server: ViteDevServer | PreviewServer,
-  secret: string,
-  api: string,
-  root: string,
-) {
-  server.middlewares.use((req, res, next) => {
-    const filePath = staticViewerRequestPath(req.url);
-    if (filePath === null) {
-      next();
-      return;
-    }
-    if (!isStaticViewerMethod(req.method)) {
-      rejectStaticViewerMethod(res);
-      return;
-    }
-    const bindings = {
-      "screen.connection_id": randomUUID(),
-      "screen.policy": screenPolicy(req.url),
-    };
-    const serve = async () => {
-      const target = await resolveNovncTarget(req.url, secret, api, (reason) => {
-        screenLog.warn("screen.proxy.target_rejected", {
-          ...bindings,
-          "screen.transport": "http",
-          reason,
-        });
-      });
-      if (res.destroyed) return;
-      if (!target) {
-        res.statusCode = 403;
-        res.end("Invalid or expired screen capability");
-        return;
-      }
-      await serveStaticViewer(req, res, root, filePath, (errorCode) => {
-        screenLog.warn("screen.static.read_failed", { ...bindings, "error.code": errorCode });
-      });
-    };
-    serve().catch((error: unknown) => {
-      screenLog.warn("screen.static.failed", {
-        ...bindings,
-        "error.code": socketErrorCode(error),
-      });
-      if (res.headersSent) {
-        res.destroy();
-        return;
-      }
-      res.statusCode = 404;
-      res.end("Not found");
-    });
-  });
-}
-
 function attachNovnc(
   server: ViteDevServer | PreviewServer,
   secret: string,
@@ -145,7 +86,7 @@ function attachNovnc(
 ) {
   if (staticViewerRoot) {
     assertStaticViewerTree(staticViewerRoot);
-    attachStaticNovncViewer(server, secret, api, staticViewerRoot);
+    server.middlewares.use(createStaticViewerMiddleware(secret, api, staticViewerRoot, screenLog));
   }
   attachNovncProxy(server, secret, api);
 }

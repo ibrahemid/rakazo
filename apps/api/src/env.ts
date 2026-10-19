@@ -15,6 +15,7 @@ import {
   resolveSupervisorToken,
   uploadSizeFromEnv,
 } from "@rakazo/core";
+import { isScreenViewerStaticEnabled } from "@rakazo/core/screen-viewer-flag";
 
 export { resolveCloudAgentProvider, resolveSandboxProvider } from "@rakazo/adapters";
 
@@ -45,6 +46,8 @@ export interface AppEnv {
   sandboxSupervisorUrl: string;
   sandboxSupervisorToken: string | undefined;
   screenProxySecret: string;
+  /** The web app serves the screen viewer from its own noVNC tree. */
+  screenViewerStatic: boolean;
   sandboxProvider: string;
   cloudAgentProvider: string;
   cloudAgentSpaceId: string | undefined;
@@ -192,6 +195,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     sandboxSupervisorToken:
       sandboxProvider === "docker" ? resolveSupervisorToken(source) : undefined,
     screenProxySecret: resolveScreenProxySecret(source),
+    screenViewerStatic: isScreenViewerStaticEnabled(source.SCREEN_VIEWER_STATIC),
     sandboxProvider,
     cloudAgentProvider,
     cloudAgentSpaceId: optional(source.CLOUD_AGENT_SPACE_ID),

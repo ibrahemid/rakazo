@@ -58,6 +58,15 @@ describe("loadEnv", () => {
     expect(loadEnv({ ...base, PI_SESSION_RECORDING: "true" }).piSessionRecording).toBe(true);
   });
 
+  it("reads the static screen viewer flag the web app uses", () => {
+    expect(loadEnv(base).screenViewerStatic).toBe(false);
+    for (const value of ["", "0", "false", "yes"]) {
+      expect(loadEnv({ ...base, SCREEN_VIEWER_STATIC: value }).screenViewerStatic).toBe(false);
+    }
+    for (const value of ["1", "true", " TRUE "]) {
+      expect(loadEnv({ ...base, SCREEN_VIEWER_STATIC: value }).screenViewerStatic).toBe(true);
+    }
+  });
   it("keeps explicit emulator settings for pnpm test", () => {
     const env = loadEnv({
       ...base,

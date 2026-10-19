@@ -173,6 +173,7 @@ import {
   isOneShotRoutineCrons,
   nextCronDateAcrossStrict,
 } from "@rakazo/core";
+import { withEmbedViewer } from "@rakazo/core/node/screen-capability";
 import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   appendEventInTransaction,
@@ -615,6 +616,7 @@ export interface RouterDeps {
     webOrigin: string;
     privacyPolicyUrl?: string;
     screenProxySecret: string;
+    screenViewerStatic?: boolean;
     sandboxProvider: string;
     gitSha?: string;
     updaterUrl?: string;
@@ -3316,7 +3318,7 @@ export function createRouter(deps: RouterDeps) {
         if (!session?.url) return { url: null };
         scheduleComputerSleep(deps.jobs, bot.computer.id);
         const viewUrl = withViewOnly(
-          session.url,
+          deps.env.screenViewerStatic ? withEmbedViewer(session.url) : session.url,
           !(hasActiveComputerControl(bot.computer) && bot.computer.controlBotId === bot.id),
         );
         return {

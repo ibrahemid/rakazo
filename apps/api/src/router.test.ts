@@ -1534,7 +1534,11 @@ describe("computer screen url", () => {
     controlRunId: null,
   };
 
-  const callScreenUrl = async (connectScreen: () => Promise<unknown>, updateMany = vi.fn()) => {
+  const callScreenUrl = async (
+    connectScreen: () => Promise<unknown>,
+    updateMany = vi.fn(),
+    screenViewerStatic = false,
+  ) => {
     const prisma = {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
@@ -1556,6 +1560,7 @@ describe("computer screen url", () => {
         defaultModel: "fake-model",
         webOrigin: "http://127.0.0.1:5173",
         screenProxySecret: "fake-test-secret",
+        screenViewerStatic,
         sandboxProvider: "e2b",
       },
       dataDir: "/tmp/rakazo-router-test",
@@ -1590,6 +1595,27 @@ describe("computer screen url", () => {
       },
       target: { hostname: "screen.example", interactive: false },
     });
+    expect(url.pathname).toMatch(/\/vnc\.html$/);
+  });
+
+  it("points remote screens at the app-served embed viewer when the static viewer is on", async () => {
+    const { response } = await callScreenUrl(
+      async () => ({
+        url: "https://screen.example/vnc.html?autoconnect=true&path=websockify%3Ftoken%3Dfake-token",
+      }),
+      vi.fn(),
+      true,
+    );
+    expect(response.status).toBe(200);
+    const { json } = await response.json();
+    const url = new URL(json.url);
+    expect(url.pathname).toMatch(/\/embed\.html$/);
+    expect(url.searchParams.get("path")).toBe("websockify");
+    expect(json.url).not.toContain("fake-token");
+    expect(
+      openScreenCapability(url.pathname.replace("/embed.html", "/websockify"), "fake-test-secret")
+        ?.target,
+    ).toMatchObject({ hostname: "screen.example", path: "/websockify?token=fake-token" });
   });
 
   it("returns desktop provider screen URLs without sealing them", async () => {

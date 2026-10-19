@@ -9,6 +9,7 @@ import {
   resetRemoteScreenCapabilityReuse,
   SCREEN_PROXY_TTL_MS,
   sealScreenCapability,
+  withEmbedViewer,
 } from "./screen-capability.js";
 
 const scope: ScreenCapabilityScope = {
@@ -29,15 +30,22 @@ const path = (url: string, interactive = false) =>
     ),
   ).pathname;
 describe("sealed screen capabilities", () => {
-  it.each([false, true])(
-    "connects the shipped embed through one capability prefix (control=%s)",
-    (interactive) => {
-      const provider = new URL("http://127.0.0.1:49152/embed.html");
+  it.each([
+    ["http://127.0.0.1:49152/embed.html", false],
+    ["http://127.0.0.1:49152/embed.html", true],
+    [withEmbedViewer("https://computer-1.up.railway.app/vnc.html"), false],
+    [withEmbedViewer("https://computer-1.up.railway.app/vnc.html"), true],
+  ])(
+    "connects the shipped embed for %s through one capability prefix (control=%s)",
+    (screen, interactive) => {
+      const provider = new URL(screen);
       provider.searchParams.set("view_only", String(!interactive));
       provider.searchParams.set("path", "websockify?token=fake-socket-token");
       const url = new URL(
         sealScreenCapability(provider.toString(), "fake-secret", "https://app.example", scope, 100),
       );
+      expect(url.pathname).toMatch(/\/embed\.html$/);
+      expect(url.searchParams.get("path")).toBe("websockify");
       const html = readFileSync(
         new URL("../../../../infra/sandboxes/computer/embed.html", import.meta.url),
         "utf8",
@@ -71,11 +79,29 @@ describe("sealed screen capabilities", () => {
       expect(socket.pathname).toBe(url.pathname.replace("/embed.html", "/websockify"));
       expect(socketUrl).not.toContain("fake-socket-token");
       expect(openScreenCapability(socket.pathname, "fake-secret", 101)?.target).toMatchObject({
+        protocol: provider.protocol,
+        hostname: provider.hostname,
+        port: Number(provider.port || 443),
         path: "/websockify?token=fake-socket-token",
         interactive,
       });
     },
   );
+  it("maps only remote stock noVNC pages to the embed viewer", () => {
+    const remote =
+      "https://computer-1.up.railway.app/vnc.html?autoconnect=true&resize=scale&path=websockify%3Ftoken%3Dview-1&view_only=true";
+    expect(withEmbedViewer(remote)).toBe(remote.replace("/vnc.html?", "/embed.html?"));
+    for (const unchanged of [
+      "http://127.0.0.1:49152/vnc.html?path=websockify%3Ftoken%3Dview-1",
+      "http://localhost:49152/vnc.html",
+      "http://rakazo-bot-1:6080/embed.html",
+      "https://computer-1.up.railway.app/embed.html",
+      "https://computer-1.up.railway.app/core/vnc.html",
+      "desktop://screen/vnc.html",
+    ]) {
+      expect(withEmbedViewer(unchanged)).toBe(unchanged);
+    }
+  });
   it("hides provider credentials and binds scope and destination", () => {
     const value = path("https://screen.example/vnc.html");
     expect(value).not.toContain("fake-provider-token");
@@ -252,6 +278,30 @@ describe("remote screen capability reuse", () => {
     expect(
       issueScreenCapability(upstream, "fake-secret", "https://other.example", scope, now + 1),
     ).not.toBe(first);
+  });
+
+  it("reuses a remote embed seal and keeps its socket on the provider", () => {
+    const now = 1_000_000;
+    const embed = withEmbedViewer(upstream);
+    const first = issued(now, scope, embed);
+    expect(issued(now + 5_000, scope, embed)).toBe(first);
+    expect(first).not.toBe(issued(now, scope, upstream));
+    const browser = new URL(first);
+    expect(browser.pathname).toMatch(/\/embed\.html$/);
+    expect(browser.searchParams.get("path")).toBe("websockify");
+    expect(
+      openScreenCapability(
+        browser.pathname.replace("/embed.html", "/websockify"),
+        "fake-secret",
+        now + 5_000,
+      )?.target,
+    ).toEqual({
+      protocol: "https:",
+      hostname: "6100-sandbox.example",
+      port: 443,
+      path: "/websockify?token=view-1",
+      interactive: false,
+    });
   });
 
   it("keeps minting a fresh capability for loopback screens", () => {
