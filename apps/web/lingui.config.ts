@@ -4,7 +4,7 @@ import { BRAND_BUILD_DIRNAME, readBrandDirSetting } from "./brand/env";
 
 export default defineConfig({
   sourceLocale: "en",
-  locales: ["en", "de", "ko", "tr", "hi", "pt-BR", "zh-CN", "es", "ru", "fr"],
+  locales: ["en", "de", "ko", "tr", "hi", "pt-BR", "zh-CN", "es", "ru", "fr", "he"],
   catalogs: [
     {
       path: readBrandDirSetting(process.env)

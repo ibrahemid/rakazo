@@ -10,6 +10,7 @@ import {
   boundedSandboxCommandTimeoutMs,
   readBoundedJsonResponse,
   resolveSupervisorToken,
+  uploadSizeFromEnv,
 } from "@rakazo/core";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import { getLogger, SERVICE_NAMES } from "@rakazo/logging";
@@ -118,13 +119,33 @@ const computerScreens = new Map<string, Map<string, ScreenAssignment>>();
 const computerScreenBoots = new Map<string, string>();
 
 export const MAX_SUPERVISOR_REQUEST_BYTES = 1024 * 1024;
-export const MAX_SUPERVISOR_FILE_REQUEST_BYTES = 16 * 1024 * 1024 + 64 * 1024;
+const maxUploadSizeBytes = uploadSizeFromEnv(process.env);
 
-/** Keep normal control requests small while allowing the existing 16 MiB file payload. */
-export function supervisorRequestBodyLimit(method: string, pathname: string): number {
+function supervisorFileContentLimit(maxBytes: number): number {
+  // Preserve the internal workspace-write allowance as well as configured chat uploads.
+  return Math.max(16 * 1024 * 1024, Math.ceil(maxBytes / 3) * 4);
+}
+
+export const MAX_SUPERVISOR_FILE_REQUEST_BYTES =
+  supervisorFileContentLimit(maxUploadSizeBytes) + 64 * 1024;
+
+/** Keep normal control requests small; file writes also need a base64 JSON envelope. */
+export function supervisorRequestBodyLimit(
+  method: string,
+  pathname: string,
+  maxBytes = maxUploadSizeBytes,
+): number {
   return method === "POST" && /^\/computers\/[^/]+\/files\/?$/.test(pathname)
-    ? MAX_SUPERVISOR_FILE_REQUEST_BYTES
+    ? supervisorFileContentLimit(maxBytes) + 64 * 1024
     : MAX_SUPERVISOR_REQUEST_BYTES;
+}
+
+export function supervisorFileWriteSchema(maxBytes = maxUploadSizeBytes) {
+  return z.object({
+    path: z.string(),
+    content: z.string().max(supervisorFileContentLimit(maxBytes)),
+    executable: z.boolean().optional(),
+  });
 }
 
 const limitSupervisorRequestBody: MiddlewareHandler = async (c, next) => {
@@ -480,6 +501,12 @@ app.post("/computers/:id/browser", async (c) => {
             z.discriminatedUnion("kind", [
               z.object({ kind: z.literal("click"), ref: z.string().min(1).max(200) }),
               z.object({
+                kind: z.literal("upload"),
+                ref: z.string().min(1).max(200),
+                paths: z.array(z.string().min(1).max(1024)).min(1).max(10),
+                roots: z.array(z.string().min(1).max(1024)).max(2).optional(),
+              }),
+              z.object({
                 kind: z.enum(["fill", "type"]),
                 ref: z.string().min(1).max(200),
                 text: z.string().max(32_000),
@@ -520,6 +547,9 @@ app.post("/computers/:id/browser", async (c) => {
           "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           "RAKAZO_BROWSER_WATCH_STDIN=1",
           "RAKAZO_BROWSER_ARGS_STDIN=1",
+          ...(process.env.RAKAZO_BROWSER_UPLOAD_MAX_BYTES !== undefined
+            ? [`RAKAZO_BROWSER_UPLOAD_MAX_BYTES=${process.env.RAKAZO_BROWSER_UPLOAD_MAX_BYTES}`]
+            : []),
         ],
         timeoutMs: 25_000,
         signal,
@@ -701,13 +731,7 @@ app.get("/computers/:id/files", async (c) => {
 });
 
 app.post("/computers/:id/files", async (c) => {
-  const body = z
-    .object({
-      path: z.string(),
-      content: z.string().max(16 * 1024 * 1024),
-      executable: z.boolean().optional(),
-    })
-    .parse(await c.req.json());
+  const body = supervisorFileWriteSchema().parse(await c.req.json());
   try {
     const { container } = await managedContainer(
       c.req.param("id"),
@@ -1225,6 +1249,11 @@ async function ensureManagedScreen(
     if (info.State?.StartedAt === screen.info.State?.StartedAt) {
       // Confirm the pending boot marker only after setup completes against the same boot.
       if (info.State?.StartedAt) computerScreenBoots.set(id, info.State.StartedAt);
+      try {
+        await rejoinComputerNetwork(info);
+      } catch (error) {
+        getLogger().error("computer network rejoin failed", error);
+      }
       return { ...screen, info };
     }
     clearComputerScreenRegistry(computerScreens, computerScreenBoots, id);
@@ -1467,6 +1496,17 @@ async function publishedScreenUrl(
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("computer screen port was not published");
+}
+
+// Control and observe address the computer on its own network. A recreated
+// supervisor container comes back on the Compose network only, and screen setup
+// (publishedScreenUrl) may never run again for an already-running computer, so
+// rejoin here before every use. Idempotent: one network inspect when attached.
+async function rejoinComputerNetwork(info: Docker.ContainerInspectInfo) {
+  if (screenNetworkMode !== "isolated") return;
+  const runtime = supervisorInfo ?? (await inspectSupervisorContainer());
+  const networkName = info.HostConfig.NetworkMode;
+  if (runtime && networkName) await connectComposeScreenPeers(networkName, runtime);
 }
 
 async function setInteractiveScreen(

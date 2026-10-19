@@ -27,18 +27,21 @@ import type {
 } from "@rakazo/contracts";
 import {
   ATTACHMENT_ALLOWED_MIME_TYPES,
-  ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_COUNT,
+  attachmentMaxBytes,
+  attachmentSizeLabel,
   canReactToThreadMessage,
   MESSAGE_REACTIONS,
   normalizeCreateBotProfile,
 } from "@rakazo/contracts";
-import type { ComposerMention, SlashActionId } from "@rakazo/core";
+import type { ComposerMention, FoldedTranscript, SlashActionId } from "@rakazo/core";
 import {
   attachmentsForThread,
   buildComposerMentionOptions,
   clampMentionHighlightIndex,
   cronFromPreset,
+  expandPeerReplies,
+  foldPeerReplies,
   formatMessageTime,
   groupVoiceChats,
   inferAttachmentMimeType,
@@ -49,6 +52,7 @@ import {
   latestAnswerableAskMessageId,
   mentionChipKey,
   nestRosterByParent,
+  normalizeRunError,
   plainTextFromMarkdown,
   projectMessageReactions,
   reorderBotTo,
@@ -62,7 +66,6 @@ import {
   speechFromBlocks,
   timeSeparatorIds,
   truncateSlashDescription,
-  userVisibleMessages,
   withLiveStreamingProgress,
 } from "@rakazo/core";
 import type { GroupAvatarMember } from "@rakazo/ui-web";
@@ -100,13 +103,13 @@ import {
   LogOut,
   Maximize2,
   Menu,
-  Mic,
   Monitor,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
   Pencil,
+  Phone,
   Plus,
   Puzzle,
   Reply,
@@ -145,8 +148,14 @@ import {
   computersAreUnavailable,
 } from "../components/ComputersUnavailableHint";
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
-import { CallCard } from "../components/call/CallCard";
+import { CallCard, CallReturnBar } from "../components/call/CallCard";
+import { IncomingCall } from "../components/call/IncomingCall";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
+import {
+  HoldToTalkControls,
+  HoldToTalkStrip,
+  useHoldToTalk,
+} from "../components/composer/HoldToTalk";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { lazyOverlay } from "../components/ErrorBoundary";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
@@ -164,7 +173,12 @@ import { TeachRecordingChrome, TeachStopButton } from "../components/teach/Teach
 import { readActivityMode, writeActivityMode } from "../lib/activity-mode";
 import type { ArtifactTarget } from "../lib/artifact-open";
 import { authClient } from "../lib/auth";
-import { takeInitialBootstrap } from "../lib/bootstrap";
+import {
+  discardPrimedBootstrap,
+  primeSpaceBootstrap,
+  takeInitialBootstrap,
+} from "../lib/bootstrap";
+import { initialBootstrapTarget } from "../lib/bootstrap-target";
 import {
   getBotsSidebarDensity,
   subscribeBotsSidebarDensity,
@@ -179,7 +193,12 @@ import {
   requestBrowserNotificationPermission,
   shouldNotifyBrowser,
 } from "../lib/browser-notifications";
-import { startCall, useCallSession } from "../lib/call-session";
+import {
+  getSnapshot as getCallSnapshot,
+  setCallMinimized,
+  startCall,
+  useCallSession,
+} from "../lib/call-session";
 import { newClientId } from "../lib/client-id";
 import {
   beginComposerDraftSubmission,
@@ -209,6 +228,7 @@ import {
   isFilePaste,
   readFileAsBase64,
   revokePendingAttachmentPreviews,
+  usePendingAttachmentPreviewCleanup,
 } from "../lib/pending-attachments";
 import { markAfterPaint, markOnce } from "../lib/performance";
 import { quoteDraftForSelection } from "../lib/quote-selection";
@@ -224,9 +244,18 @@ import {
   rosterHasUndismissedRunError,
   rosterWorkStatusLabel,
 } from "../lib/roster-status";
-import { clearSpaceSelection, rpc, selectedSpaceId, selectSpace } from "../lib/rpc";
+import { clearSpaceSelection, createSpaceRpc, selectedSpaceId, selectSpace } from "../lib/rpc";
+import { translateRunError } from "../lib/run-error";
 import { readSeenRunErrorIds, rememberSeenRunErrorId } from "../lib/run-error-storage";
 import { sharedInflight } from "../lib/shared-inflight";
+import { useSignOut } from "../lib/sign-out";
+import {
+  guardShellNavigate,
+  markShellReady,
+  remountShellForSpace,
+  spaceSwitchDecision,
+  useSpaceEpoch,
+} from "../lib/space-switch";
 import {
   activeThreadRuns,
   applyThreadSendReceipt,
@@ -272,6 +301,7 @@ import {
   RoutineListHeader,
   RoutineListRow,
   routineNeedsOneShotArm,
+  watchFromDraft,
 } from "./RoutineEditor";
 import type { SettingsSection } from "./SettingsOverlay";
 import { SpaceSearchResults } from "./SpaceSearch";
@@ -411,9 +441,33 @@ function readCollapsedRosterParents(userId: string | null | undefined): Set<stri
 }
 
 export function ShellPage() {
+  // A new key per space switch, so nothing from the previous space survives it.
+  const spaceEpoch = useSpaceEpoch();
+  return <SpaceShell key={spaceEpoch} />;
+}
+
+function SpaceShell() {
   const { t } = useLingui();
   const { botId, groupId } = useParams();
-  const navigate = useNavigate();
+  const [rpc] = useState(() => createSpaceRpc(selectedSpaceId()));
+  const routerNavigate = useNavigate();
+  const navigateRef = useRef(routerNavigate);
+  navigateRef.current = routerNavigate;
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const navigate = useMemo(
+    () =>
+      guardShellNavigate(
+        () => navigateRef.current,
+        () => alive.current,
+      ),
+    [],
+  );
   const [searchParams, setSearchParams] = useSearchParams();
   // Mirrors searchParams for effects that only need to read it once on run,
   // not re-run on every unrelated query-param change (e.g. the SSE subscribe
@@ -472,11 +526,17 @@ export function ShellPage() {
     () => false,
   );
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  usePendingAttachmentPreviewCleanup(pendingAttachments);
   const [replyTarget, setReplyTarget] = useState<ThreadMessage | null>(null);
   const [replyQuote, setReplyQuote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [logOutError, setLogOutError] = useState<string | null>(null);
+  const { signingOut, logOut } = useSignOut(() => {
+    clearSpaceSelection();
+    navigate("/");
+  }, setLogOutError);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [panel, setPanelState] = useState<Panel>(null);
@@ -586,6 +646,20 @@ export function ShellPage() {
   >(undefined);
   const memoryProviderConfigRevision = useRef(0);
   const call = useCallSession();
+  /** Calls a bot, or opens voice settings first when no voice is connected. */
+  const callBot = (bot: Bot) => {
+    if (!bootstrapMe?.phoneCallsEnabled) return;
+    if (!voiceStatus?.ready) {
+      openSettings("voice");
+      return;
+    }
+    startCall({
+      botId: bot.id,
+      botName: bot.name,
+      botColor: bot.color,
+      transcribe: voiceStatus ? Boolean(voiceStatus.transcribe) : undefined,
+    });
+  };
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [dismissedRunErrorIds, setDismissedRunErrorIds] =
@@ -663,6 +737,10 @@ export function ShellPage() {
     section: BotSection;
     spaceId: string;
   } | null>(null);
+  const [deleteSectionTarget, setDeleteSectionTarget] = useState<{
+    section: BotSection;
+    spaceId: string;
+  } | null>(null);
   const [sectionMenu, setSectionMenu] = useState<{
     section: BotSection;
     spaceId: string;
@@ -679,6 +757,22 @@ export function ShellPage() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [initialBotsLoaded, setInitialBotsLoaded] = useState(false);
   const [bootstrapMe, setBootstrapMe] = useState<Me | null>();
+  const callsEnabledRef = useRef(false);
+  useEffect(() => {
+    callsEnabledRef.current = bootstrapMe?.phoneCallsEnabled === true;
+  }, [bootstrapMe?.phoneCallsEnabled]);
+  const currentSpaceId = selectedSpaceId() ?? bootstrapMe?.spaceId ?? null;
+  // null: settings follow the space the app is showing.
+  const [settingsSpaceId, setSettingsSpaceId] = useState<string | null>(null);
+  const settingsSpace =
+    spaces.find((space) => space.id === (settingsSpaceId ?? currentSpaceId)) ?? null;
+  // Never fall back to another space's settings when the edited space goes away.
+  const settingsSpaceGone = settingsSpaceId !== null && !settingsSpace;
+  useEffect(() => {
+    if (!settingsSpaceGone) return;
+    setSettingsOpen(false);
+    setSettingsSpaceId(null);
+  }, [settingsSpaceGone]);
   const [keepComputerRecovery, setKeepComputerRecovery] = useState(false);
   const recoveryHoldTimer = useRef<number | undefined>(undefined);
   const showComputerRecoveryHint =
@@ -1200,6 +1294,22 @@ export function ShellPage() {
         if (cancelled) return;
         const groupList = bootstrap.groups;
         setBootstrapMe(bootstrap.me);
+        // First sign-in with no saved timezone: adopt this browser's, once. A choice made
+        // in Settings is never overwritten; a failure just leaves bots on UTC.
+        if (bootstrap.me.timezone === null) {
+          void rpc.preferences
+            .adoptTimezone({ timezone: localTimezone() })
+            .then((nextMe) => {
+              if (!cancelled) {
+                setBootstrapMe((current) =>
+                  current && current.timezone == null
+                    ? { ...current, timezone: nextMe.timezone }
+                    : (current ?? nextMe),
+                );
+              }
+            })
+            .catch(() => {});
+        }
         // Skip list/route writes only if a later refreshBots() successfully
         // committed (failed refreshes bump epoch but not botsRefreshApplied).
         const applyBotLists = appliedAtStart === botsRefreshApplied.current;
@@ -1246,11 +1356,11 @@ export function ShellPage() {
       .catch(() => {
         if (cancelled) return;
         setBootstrapMe(null);
-        void refreshBots(true);
+        void refreshBots(true).catch(() => undefined);
       });
     let refreshTimer: number | undefined;
     const refreshVisibleBots = () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" && !callsEnabledRef.current) return;
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => void refreshBots().catch(() => undefined), 50);
     };
@@ -1421,6 +1531,7 @@ export function ShellPage() {
           event.type === "bot.spawned" ||
           event.type === "bot.deleted" ||
           event.type === "bot.updated" ||
+          event.type === "group.created" ||
           event.type === "run.started" ||
           isRunTerminalEvent(event) ||
           event.type === "thread.cleared"
@@ -1527,6 +1638,7 @@ export function ShellPage() {
         if (
           event.type === "run.started" ||
           event.type === "bot.updated" ||
+          event.type === "group.updated" ||
           isRunTerminalEvent(event)
         ) {
           void refreshBots().catch(() => undefined);
@@ -1568,22 +1680,85 @@ export function ShellPage() {
     return sidebarGroupsForSpaces(sidebarSpaces, query);
   }, [bootstrapMe, botSections, bots, groups, spaces, query]);
 
+  const spaceSwitchRequest = useRef(0);
+  useEffect(
+    () => () => {
+      // A switch still loading when this shell goes away (another page, or a
+      // newer switch) must not pull the user back to its space afterwards.
+      spaceSwitchRequest.current += 1;
+    },
+    [],
+  );
   const openSpaceChat = useCallback(
     (spaceId: string, path: string) => {
       setMobileSidebarOpen(false);
-      const previousSpaceId = selectedSpaceId();
+      const request = ++spaceSwitchRequest.current;
+      const previousEffective = selectedSpaceId() ?? bootstrapMe?.spaceId;
       // Persist the active space (including primary) so voice/RPC headers match the chat.
-      const selectionStored = selectSpace(spaceId);
-      if (!selectionStored) return;
-      const previousEffective = previousSpaceId ?? bootstrapMe?.spaceId;
-      const boundaryChanged = previousEffective !== spaceId;
-      // Soft-navigate within the same space; reload only when the auth boundary changes
-      // so bootstrapped bots/groups match the request header.
-      if (boundaryChanged) {
-        window.location.assign(path);
+      if (previousEffective === spaceId) {
+        if (selectSpace(spaceId)) navigate(path);
         return;
       }
-      navigate(path);
+      const reload = () => {
+        if (selectSpace(spaceId)) window.location.assign(path);
+      };
+      // Another space is an auth boundary: its bootstrap is loaded first, under that
+      // space's header, then the shell remounts so none of this space's state survives.
+      // A call in progress, or a page outside the shell, still reloads.
+      const target = initialBootstrapTarget(path, false);
+      if (!target || getCallSnapshot()) {
+        reload();
+        return;
+      }
+      const startedAt = window.location.pathname;
+      const decision = () =>
+        spaceSwitchDecision(
+          request === spaceSwitchRequest.current,
+          startedAt,
+          window.location.pathname,
+          Boolean(getCallSnapshot()),
+        );
+      const current = () => decision() !== "abandon";
+      const primed = primeSpaceBootstrap(spaceId, target.botId);
+      primed.then(
+        () => {
+          if (!current()) {
+            discardPrimedBootstrap(primed);
+            return;
+          }
+          // A call started while the bootstrap loaded belongs to this space.
+          if (getCallSnapshot()) {
+            discardPrimedBootstrap(primed);
+            reload();
+            return;
+          }
+          remountShellForSpace(() => {
+            const action = decision();
+            if (action !== "commit") {
+              discardPrimedBootstrap(primed);
+              if (action === "reload") {
+                // Leave the view-transition update before starting a full navigation.
+                window.setTimeout(() => {
+                  if (current()) reload();
+                }, 0);
+              }
+              return false;
+            }
+            if (!selectSpace(spaceId)) {
+              discardPrimedBootstrap(primed);
+              return false;
+            }
+            // Playback belongs to the conversation being left.
+            speaker.stop();
+            navigate(path);
+            return true;
+          });
+        },
+        () => {
+          discardPrimedBootstrap(primed);
+          if (current()) reload();
+        },
+      );
     },
     [bootstrapMe?.spaceId, navigate],
   );
@@ -1740,9 +1915,11 @@ export function ShellPage() {
     if (epoch !== historyEpoch.current || jumpId !== jumpGeneration.current) return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
-    const targetInPage = userVisibleMessages(page.messages, { includePeerReceipts: true }).some(
-      (message) => message.id === target.messageId,
-    );
+    // A reply folded under its peer marker counts: the transcript expands the marker to show it.
+    const pageTranscript = foldPeerReplies(page.messages, { includePeerReceipts: true });
+    const targetInPage =
+      pageTranscript.markerOf.has(target.messageId) ||
+      pageTranscript.messages.some((message) => message.id === target.messageId);
     expandedHistoryThread.current = targetInPage ? page.threadId : null;
     pinnedAroundRef.current = targetInPage
       ? {
@@ -1865,10 +2042,14 @@ export function ShellPage() {
   const handleRunErrorPresented = useCallback((runId: string) => {
     rememberSeenRunErrorId(runId);
   }, []);
-  const transcriptMessages = useMemo(
-    () => userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: true }),
+  const transcript = useMemo(
+    () => foldPeerReplies(activeSnapshot?.messages ?? [], { includePeerReceipts: true }),
     [activeSnapshot?.messages],
   );
+  const transcriptRef = useRef(transcript);
+  useLayoutEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
     () => (inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "" }),
     [active?.id, groupId, inGroup],
@@ -2015,6 +2196,7 @@ export function ShellPage() {
       markAfterPaint("rk:renderer:thread-painted");
     }
     if (shellReady) {
+      markShellReady();
       markOnce("rk:renderer:shell-ready");
       markAfterPaint("rk:renderer:shell-painted");
     }
@@ -2042,8 +2224,10 @@ export function ShellPage() {
   const openBot = useCallback((id: string) => navigate(`/app/${id}`), [navigate]);
   const loadOlder = useCallback(() => loadOlderMessagesRef.current(), []);
   const jumpToReplyMessage = useCallback((messageId: string) => {
-    const existing = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
-    if (existing) {
+    const inTranscript =
+      transcriptRef.current.markerOf.has(messageId) ||
+      document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+    if (inTranscript) {
       // Cancel any in-flight around-fetch so it cannot overwrite this scroll.
       jumpGeneration.current += 1;
       setScrollRequest({ messageId, nonce: jumpGeneration.current });
@@ -2083,12 +2267,22 @@ export function ShellPage() {
       const groupId = activeGroupId.current;
       if (!botId && !groupId) return;
       try {
-        await rpc.threads.react({
+        const result = await rpc.threads.react({
           ...(groupId ? { groupId } : { botId: botId! }),
           messageId: message.id,
           reaction,
           clientNonce: newClientNonce(),
         });
+        if (result.runIds?.length) {
+          // The reaction is saved; a failed refresh is caught up by live events.
+          try {
+            if (groupId && activeGroupId.current === groupId) {
+              await refreshGroupThreadRef.current(groupId);
+            } else if (botId && activeBotId.current === botId) {
+              await refreshThreadRef.current(botId);
+            }
+          } catch {}
+        }
       } catch (error) {
         const stillHere = groupId
           ? activeGroupId.current === groupId
@@ -2111,8 +2305,10 @@ export function ShellPage() {
           skipped.push(t`${file.name} (max ${ATTACHMENT_MAX_COUNT} attachments)`);
           continue;
         }
-        if (file.size > ATTACHMENT_MAX_BYTES) {
-          skipped.push(t`${file.name} (over 10 MiB)`);
+        if (file.size > attachmentMaxBytes(bootstrapMe)) {
+          skipped.push(
+            t`${file.name} (over ${attachmentSizeLabel(attachmentMaxBytes(bootstrapMe))})`,
+          );
           continue;
         }
         const mimeType = inferAttachmentMimeType(file.name, file.type);
@@ -2132,7 +2328,7 @@ export function ShellPage() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       return next.length > 0;
     },
-    [pendingAttachments, t],
+    [pendingAttachments, bootstrapMe, t],
   );
   const removeAttachment = useCallback((attachment: PendingAttachment) => {
     revokePendingAttachmentPreviews([attachment]);
@@ -2434,8 +2630,16 @@ export function ShellPage() {
   }
 
   function openSettings(section: SettingsSection = "general") {
+    setSettingsSpaceId(null);
     setSettingsSection(section);
     setSettingsOpen(true);
+  }
+
+  // Space-scoped sections bind their own rpc client to this space, so another
+  // space's settings open in place without switching the app or reloading.
+  function openSpaceSettings(spaceId: string) {
+    openSettings("models");
+    setSettingsSpaceId(spaceId);
   }
 
   async function createBot(input: {
@@ -2450,6 +2654,8 @@ export function ShellPage() {
       notifyOnFinish: true,
       computerMode: input.computerMode,
     });
+    // A roster requested before creation may omit this bot and redirect its new chat.
+    botsRefreshEpoch.current += 1;
     setBots((current) =>
       current.some((item) => item.id === bot.id) ? current : [bot, ...current],
     );
@@ -2703,8 +2909,11 @@ export function ShellPage() {
     const heartbeatBotId = computerBot?.id ?? active?.id;
     if ((panel !== "computer" && !computerOpen) || !heartbeatBotId || computer?.state !== "running")
       return;
-    const ping = () =>
+    // A computer panel left open in a hidden window must not keep the computer awake.
+    const ping = () => {
+      if (document.visibilityState !== "visible") return;
       void rpc.computer.heartbeat({ botId: heartbeatBotId }).catch(() => undefined);
+    };
     ping();
     const timer = window.setInterval(ping, 60_000);
     return () => window.clearInterval(timer);
@@ -2878,6 +3087,7 @@ export function ShellPage() {
       ) : null}
       <aside
         data-testid="bots-sidebar"
+        data-space-switch="sidebar"
         data-bots-sidebar-density={botsSidebarDensity}
         data-collapsed={botsSidebarCollapsed ? "true" : "false"}
         inert={botsSidebarCollapsed && !mobileSidebarOpen ? true : undefined}
@@ -3022,7 +3232,7 @@ export function ShellPage() {
                   nestedRows.flatMap((row) =>
                     row.item.kind === "bot" && row.parentId === parentId ? [row.item.chat.id] : [],
                   );
-                const hasSpaceActions = group.canRenameSpace || group.canDeleteSpace;
+                const hasSpaceActions = group.canOpenSpaceSettings;
                 const headerDropTarget: RosterDropTarget | null =
                   group.spaceId === bootstrapMe?.spaceId &&
                   !group.emptySpaceId &&
@@ -3533,7 +3743,13 @@ export function ShellPage() {
             <Trans>Integrations</Trans>
           </span>
         </button>
-        <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+        <Popover
+          open={menuOpen}
+          onOpenChange={(open) => {
+            setMenuOpen(open);
+            if (!open) setLogOutError(null);
+          }}
+        >
           <PopoverTrigger
             data-testid="user-menu-trigger"
             className="flex items-center gap-[11px] px-[18px] py-3.5"
@@ -3602,16 +3818,20 @@ export function ShellPage() {
               <Button
                 variant="ghost"
                 className="w-full justify-start font-normal"
-                onClick={() =>
-                  void authClient.signOut().then(() => {
-                    clearSpaceSelection();
-                    navigate("/");
-                  })
-                }
+                disabled={signingOut}
+                onClick={() => {
+                  setLogOutError(null);
+                  void logOut();
+                }}
               >
                 <LogOut className="text-muted-foreground" strokeWidth={1.75} />
                 <Trans>Log out</Trans>
               </Button>
+              {logOutError ? (
+                <p role="alert" className="px-3 pt-1 pb-2 text-[13px] text-destructive">
+                  {logOutError}
+                </p>
+              ) : null}
             </PopoverContent>
           ) : null}
         </Popover>
@@ -3665,6 +3885,7 @@ export function ShellPage() {
 
       {/* Keep the composer's z-index inside the chat so phone overlays like the side panel cover it. */}
       <main
+        data-space-switch="main"
         aria-hidden={mobileSidebarOpen || undefined}
         inert={mobileSidebarOpen}
         className="isolate flex min-w-0 flex-1 flex-col bg-background"
@@ -3730,9 +3951,30 @@ export function ShellPage() {
             </button>
           </div>
           <div className="flex items-center gap-1">
+            {bootstrapMe?.phoneCallsEnabled && !inGroup && active ? (
+              <button
+                type="button"
+                data-testid="call-button"
+                aria-label={call?.botId === active.id ? t`Open call` : t`Call`}
+                title={call?.botId === active.id ? t`Open call` : t`Call`}
+                onClick={() => {
+                  if (call?.botId === active.id) {
+                    setCallMinimized(false);
+                    return;
+                  }
+                  callBot(active);
+                }}
+                data-active={call?.botId === active.id ? "" : undefined}
+                className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
+              >
+                <Phone size={17} strokeWidth={1.6} className="text-foreground/75" />
+              </button>
+            ) : null}
             {!inGroup && active ? (
               <button
                 type="button"
+                aria-label={t`Agent computer`}
+                aria-pressed={panel === "computer"}
                 title={t`Agent computer`}
                 onClick={() => {
                   const next = panel === "computer" ? null : "computer";
@@ -3750,6 +3992,7 @@ export function ShellPage() {
             ) : null}
           </div>
         </div>
+        <CallReturnBar />
         {!active && !activeGroup && initialBotsLoaded ? (
           <div className="grid flex-1 place-items-center">
             <Button onClick={() => setPanel("create")}>
@@ -3764,13 +4007,18 @@ export function ShellPage() {
             scrollRequest={scrollRequest}
             onScrollRequestHandled={clearScrollRequest}
             artifactTarget={transcriptArtifactTarget}
-            messages={transcriptMessages}
+            transcript={transcript}
             showToolActivity={showToolActivity}
             olderCursor={activeSnapshot?.olderCursor ?? null}
             loadingOlder={loadingOlder}
             answerableAskMessageId={answerableAskMessageId}
             running={transcriptRunning}
             workingBots={workingBots}
+            onCallBack={
+              bootstrapMe?.phoneCallsEnabled && !inGroup && active
+                ? () => callBot(active)
+                : undefined
+            }
             onLoadOlder={loadOlder}
             onOpenBot={openBot}
             onAnswer={answerMessage}
@@ -3824,22 +4072,8 @@ export function ShellPage() {
             onRemoveAttachment={removeAttachment}
             onSend={sendMessage}
             onStop={stopRun}
-            onVoice={
-              !inGroup && active
-                ? () => {
-                    if (!voiceStatus?.ready) {
-                      openSettings("voice");
-                      return;
-                    }
-                    startCall({
-                      botId: active.id,
-                      botName: active.name,
-                      botColor: active.color,
-                      transcribe: voiceStatus ? Boolean(voiceStatus.transcribe) : undefined,
-                    });
-                  }
-                : undefined
-            }
+            phoneCallsEnabled={bootstrapMe?.phoneCallsEnabled === true}
+            dictationTranscribe={voiceStatus ? Boolean(voiceStatus.transcribe) : undefined}
             artifactTarget={transcriptArtifactTarget}
             replyTarget={activeReplyTarget}
             replyQuote={activeReplyQuote}
@@ -3866,6 +4100,11 @@ export function ShellPage() {
       </main>
 
       <CallCard onSettings={() => openSettings("voice")} />
+      <IncomingCall
+        bots={bootstrapMe?.phoneCallsEnabled ? bots : []}
+        transcribe={voiceStatus ? Boolean(voiceStatus.transcribe) : undefined}
+        onAnswered={(botId) => navigate(`/app/${botId}`)}
+      />
 
       <ResizableSidePanel
         botsSidebarCollapsed={botsSidebarCollapsed}
@@ -4027,6 +4266,10 @@ export function ShellPage() {
                 bots={bots}
                 onCancel={() => setPanel(null)}
                 onCreate={(input) => createGroup(input)}
+                onOpenBot={(botId) => {
+                  setPanel(null);
+                  openBot(botId);
+                }}
               />
             ) : null}
             {panel === "group-settings" && activeGroup ? (
@@ -4052,6 +4295,7 @@ export function ShellPage() {
                   await refreshBots().catch(() => undefined);
                 }}
                 onClose={() => setPanel(null)}
+                onOpenBot={openBot}
                 covered={computerOpen}
               />
             ) : null}
@@ -4068,7 +4312,7 @@ export function ShellPage() {
                 memoryProviderConfigured={memoryProviderConfig != null}
                 onSkillsChange={setAgentSkills}
                 onSave={async ({ computerMode, ...patch }) => {
-                  if (computerMode !== active.computerMode) {
+                  if (computerMode !== undefined && computerMode !== active.computerMode) {
                     await rpc.bots.setComputer({
                       botId: active.id,
                       mode: computerMode,
@@ -4101,7 +4345,7 @@ export function ShellPage() {
                 draft={routineDraft}
                 onChange={setRoutineDraft}
                 editing={editingRoutine}
-                timezone={editingRoutine?.timezone ?? localTimezone()}
+                timezone={editingRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone()}
                 webhook={{
                   path:
                     typeof window !== "undefined"
@@ -4133,11 +4377,20 @@ export function ShellPage() {
                     !routineDraft.schedules.length &&
                     !routineDraft.webhookEnabled &&
                     !routineDraft.githubEnabled &&
-                    !routineDraft.messageProvider
+                    !routineDraft.messageProvider &&
+                    !routineDraft.watch
                   ) {
-                    setRoutineError(t`Add a schedule, webhook, GitHub, or message trigger`);
+                    setRoutineError(t`Add a trigger to run this routine.`);
                     return;
                   }
+                  const watchResult = routineDraft.watch
+                    ? watchFromDraft(routineDraft.watch)
+                    : null;
+                  if (watchResult && "error" in watchResult) {
+                    setRoutineError(watchResult.error);
+                    return;
+                  }
+                  const watch = watchResult?.watch ?? null;
                   const saveRequest = ++routineSaveRequest.current;
                   routineSavePending.current = true;
                   setSavingRoutine(true);
@@ -4186,6 +4439,7 @@ export function ShellPage() {
                         webhookEnabled: routineDraft.webhookEnabled,
                         githubEnabled: routineDraft.githubEnabled,
                         messageProvider: routineDraft.messageProvider,
+                        watch,
                         ...(routineModel.modelProvider !== targetRoutine.modelProvider ||
                         routineModel.modelId !== targetRoutine.modelId ||
                         routineModel.thinkingLevel !== targetRoutine.thinkingLevel
@@ -4199,12 +4453,13 @@ export function ShellPage() {
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
-                        timezone: localTimezone(),
+                        timezone: bootstrapMe?.timezone ?? localTimezone(),
                         active: routineDraft.active,
                         notify: true,
                         webhookEnabled: routineDraft.webhookEnabled,
                         githubEnabled: routineDraft.githubEnabled,
                         messageProvider: routineDraft.messageProvider,
+                        watch,
                         ...routineModel,
                       });
                     }
@@ -4405,6 +4660,17 @@ export function ShellPage() {
               sideOffset={0}
               className="w-[220px]"
             >
+              {spaceMenuTarget ? (
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSpaceMenu(null);
+                    openSpaceSettings(spaceMenuTarget.id);
+                  }}
+                >
+                  <Settings />
+                  {t`Settings`}
+                </DropdownMenuItem>
+              ) : null}
               {spaceMenuTarget?.canRename ? (
                 <DropdownMenuItem
                   onClick={() => {
@@ -4492,6 +4758,7 @@ export function ShellPage() {
             onConfirm={async () => {
               const targetId = deleteSpaceTarget.id;
               const result = await rpc.spaces.remove({ spaceId: targetId });
+              if (!alive.current) return;
               setDeleteSpaceTarget(null);
               setPanel(null);
               const effectiveSpaceId = selectedSpaceId() ?? bootstrapMe?.spaceId;
@@ -4541,6 +4808,23 @@ export function ShellPage() {
           />
         ) : null}
 
+        {deleteSectionTarget ? (
+          <DeleteItemDialog
+            item={deleteSectionTarget.section}
+            noun="section"
+            description={<Trans>Its bots and groups are kept and leave the section.</Trans>}
+            onCancel={() => setDeleteSectionTarget(null)}
+            onConfirm={async () => {
+              await rpc.botSections.remove(
+                { sectionId: deleteSectionTarget.section.id },
+                { context: { spaceId: deleteSectionTarget.spaceId } },
+              );
+              setDeleteSectionTarget(null);
+              await refreshBots();
+            }}
+          />
+        ) : null}
+
         {sectionMenu ? (
           <DropdownMenu
             open
@@ -4577,6 +4861,19 @@ export function ShellPage() {
                 <Pencil />
                 {t`Rename section`}
               </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => {
+                  setDeleteSectionTarget({
+                    section: sectionMenu.section,
+                    spaceId: sectionMenu.spaceId,
+                  });
+                  setSectionMenu(null);
+                }}
+              >
+                <Trash2 />
+                {t`Delete section`}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
@@ -4596,6 +4893,7 @@ export function ShellPage() {
             onCancel={() => setNewSpaceOpen(false)}
             onConfirm={async (name) => {
               const space = await rpc.spaces.create({ name });
+              if (!alive.current) return;
               if (!selectSpace(space.id)) {
                 setNewSpaceOpen(false);
                 await refreshBots();
@@ -4671,8 +4969,12 @@ export function ShellPage() {
       </Suspense>
 
       <Suspense fallback={null}>
-        {settingsOpen ? (
+        {settingsOpen && !settingsSpaceGone ? (
           <SettingsOverlay
+            space={settingsSpace}
+            spaces={spaces}
+            currentSpaceId={currentSpaceId}
+            onSpaceChange={setSettingsSpaceId}
             name={userName}
             email={session.data?.user.email}
             usage={usage}
@@ -4692,7 +4994,15 @@ export function ShellPage() {
             }}
             onAvatarStyleChange={async (avatarStyle) => {
               const nextMe = await rpc.preferences.update({ avatarStyle });
-              setBootstrapMe(nextMe);
+              // Merge only the saved field: a concurrent save's response must not be undone.
+              setBootstrapMe((prev) =>
+                prev ? { ...prev, avatarStyle: nextMe.avatarStyle } : nextMe,
+              );
+            }}
+            timezone={bootstrapMe?.timezone ?? null}
+            onTimezoneChange={async (timezone) => {
+              const nextMe = await rpc.preferences.update({ timezone });
+              setBootstrapMe((prev) => (prev ? { ...prev, timezone: nextMe.timezone } : nextMe));
             }}
             memoryConfig={memoryProviderConfig}
             onMemoryConfigChange={(config) => {
@@ -4919,13 +5229,14 @@ const Transcript = memo(function Transcript({
   scrollRequest,
   onScrollRequestHandled,
   artifactTarget,
-  messages,
+  transcript,
   showToolActivity,
   olderCursor,
   loadingOlder,
   answerableAskMessageId,
   running,
   workingBots,
+  onCallBack,
   onLoadOlder,
   onOpenBot,
   onAnswer,
@@ -4948,13 +5259,15 @@ const Transcript = memo(function Transcript({
   scrollRequest: { messageId: string; nonce: number } | null;
   onScrollRequestHandled: () => void;
   artifactTarget: ArtifactTarget;
-  messages: ThreadMessage[];
+  transcript: FoldedTranscript<ThreadMessage>;
   showToolActivity: boolean;
   olderCursor: number | null;
   loadingOlder: boolean;
   answerableAskMessageId: string | null;
   running: boolean;
   workingBots: GroupAvatarMember[];
+  /** Calls the bot back from a missed call in the transcript. */
+  onCallBack?: () => void;
   onLoadOlder: () => void | Promise<void>;
   onOpenBot: (botId: string) => void;
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
@@ -4980,6 +5293,31 @@ const Transcript = memo(function Transcript({
   const lastScrollTop = useRef<number | null>(null);
   const autoScrollTimer = useRef<number | undefined>(undefined);
   const jumpButtonRef = useRef<HTMLButtonElement>(null);
+  const [expandedPeerMarkers, setExpandedPeerMarkers] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const togglePeerReplies = useCallback((markerId: string) => {
+    // Like a pointer press: a keyboard toggle must not snap the transcript to its end.
+    following.current = false;
+    autoScrolling.current = false;
+    setExpandedPeerMarkers((expanded) => {
+      const next = new Set(expanded);
+      if (!next.delete(markerId)) next.add(markerId);
+      return next;
+    });
+  }, []);
+  // A jump to a folded reply expands its marker; the scroll effect below then finds the row.
+  useLayoutEffect(() => {
+    const markerId = scrollRequest && transcript.markerOf.get(scrollRequest.messageId);
+    if (!markerId) return;
+    setExpandedPeerMarkers((expanded) =>
+      expanded.has(markerId) ? expanded : new Set(expanded).add(markerId),
+    );
+  }, [scrollRequest, transcript]);
+  const messages = useMemo(
+    () => expandPeerReplies(transcript, expandedPeerMarkers),
+    [transcript, expandedPeerMarkers],
+  );
   const messageById = useMemo(
     () => new Map(messages.map((message) => [message.id, message])),
     [messages],
@@ -5140,7 +5478,8 @@ const Transcript = memo(function Transcript({
     window.clearTimeout(jumpScrollTimer.current);
     jumpScrollTimer.current = window.setTimeout(endJumpScroll, 2_000);
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    row.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+    // Streaming layout updates can interrupt a smooth jump before it reaches the row.
+    row.scrollIntoView({ behavior: "auto", block: "center" });
     row.animate(
       reducedMotion
         ? [{ backgroundColor: "var(--muted)" }, { backgroundColor: "var(--muted)" }]
@@ -5255,7 +5594,11 @@ const Transcript = memo(function Transcript({
                     locale={i18n.locale || "en"}
                   />
                 ) : null}
-                <VoiceChatCard group={item} revealMessageId={scrollRequest?.messageId} />
+                <VoiceChatCard
+                  group={item}
+                  revealMessageId={scrollRequest?.messageId}
+                  onCallBack={onCallBack}
+                />
               </div>
             );
           }
@@ -5284,11 +5627,15 @@ const Transcript = memo(function Transcript({
                     className={
                       peerReceipt
                         ? undefined
-                        : `relative w-fit min-w-0 ${
-                            message.role === "user"
-                              ? "max-w-[min(84%,calc(100%_-_8rem))] [@media(hover:none)]:max-w-[84%]"
-                              : "max-w-[min(88%,calc(100%_-_8rem))] [@media(hover:none)]:max-w-[88%]"
-                          }`
+                        : message.blocks.some(
+                              (block) => block.kind === "ask" || block.kind === "mcp_approval",
+                            )
+                          ? "relative w-full min-w-0 max-w-full"
+                          : `relative w-fit min-w-0 ${
+                              message.role === "user"
+                                ? "max-w-[min(84%,calc(100%_-_8rem))] [@media(hover:none)]:max-w-[84%]"
+                                : "max-w-[min(88%,calc(100%_-_8rem))] [@media(hover:none)]:max-w-[88%]"
+                            }`
                     }
                   >
                     <MessageView
@@ -5297,6 +5644,14 @@ const Transcript = memo(function Transcript({
                       canAnswer={message.id === answerableAskMessageId}
                       onOpenBot={onOpenBot}
                       onOpenPeerMessages={onOpenPeerMessages}
+                      peerReplies={
+                        transcript.folded.has(message.id)
+                          ? expandedPeerMarkers.has(message.id)
+                            ? "expanded"
+                            : "collapsed"
+                          : undefined
+                      }
+                      onTogglePeerReplies={togglePeerReplies}
                       onAnswer={onAnswer}
                       speakerName={
                         peerReceipt
@@ -5509,7 +5864,8 @@ export const Composer = memo(function Composer({
   onRemoveAttachment,
   onSend,
   onStop,
-  onVoice,
+  phoneCallsEnabled,
+  dictationTranscribe,
   replyTarget,
   replyQuote,
   replyTargetName,
@@ -5537,7 +5893,9 @@ export const Composer = memo(function Composer({
   onRemoveAttachment: (attachment: PendingAttachment) => void;
   onSend: (text: string, mentions: ComposerMention[], clientNonce: string) => Promise<boolean>;
   onStop: () => Promise<void>;
-  onVoice?: () => void;
+  phoneCallsEnabled?: boolean;
+  /** Hold-to-talk falls back to the voice provider's transcription; undefined while unknown. */
+  dictationTranscribe?: boolean;
   artifactTarget: ArtifactTarget;
   replyTarget?: ThreadMessage | null;
   replyQuote?: string | null;
@@ -5556,10 +5914,23 @@ export const Composer = memo(function Composer({
     const mentionMatch = /(?:^|\s)@([\w-]*)$/.exec(draft);
     return mentionMatch ? (mentionMatch[1] ?? "") : null;
   });
-  const [mentionHighlightIndex, setMentionHighlightIndex] = useState(0);
+  const [mentionHighlightKey, setMentionHighlightKey] = useState<string | null>(null);
   const [slashQuery, setSlashQuery] = useState<string | null>(() => {
     const slashMatch = /^\/([^\n]*)$/.exec(draft);
     return slashMatch ? (slashMatch[1] ?? "") : null;
+  });
+  const onCall = useCallSession() !== null;
+  const talk = useHoldToTalk({
+    transcribe: dictationTranscribe,
+    disabled: disabled || onCall || !phoneCallsEnabled,
+    onText: (text) => {
+      // A refused send keeps the words: they land in the field to edit or retry.
+      void onSend(text, [], newClientNonce())
+        .then((accepted) => {
+          if (accepted === false) setDraft((current) => (current ? `${current} ${text}` : text));
+        })
+        .catch(() => setDraft((current) => (current ? `${current} ${text}` : text)));
+    },
   });
   const [selectedSkill, setSelectedSkill] = useState<AgentSkillCatalogEntry | null>(null);
   const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
@@ -5728,7 +6099,7 @@ export const Composer = memo(function Composer({
     writeComposerDraft(draftKey, next);
     setDraft(next);
     setMentionQuery(null);
-    setMentionHighlightIndex(0);
+    setMentionHighlightKey(null);
     setSelectedMentions((current) =>
       current.some((selected) => mentionChipKey(selected) === mentionChipKey(mention))
         ? current
@@ -5771,11 +6142,11 @@ export const Composer = memo(function Composer({
   }, [mentionQuery, mentionTargets]);
 
   useEffect(() => {
-    setMentionHighlightIndex(0);
-  }, [mentionQuery, mentionOptions]);
+    setMentionHighlightKey(null);
+  }, [mentionQuery]);
 
   const activeMentionIndex = clampMentionHighlightIndex(
-    mentionHighlightIndex,
+    mentionOptions.findIndex((mention) => mentionChipKey(mention) === mentionHighlightKey),
     mentionOptions.length,
   );
   const mentionPickerOpen = mentionOptions.length > 0;
@@ -5818,7 +6189,7 @@ export const Composer = memo(function Composer({
     const submission = beginComposerDraftSubmission(draftKey, draft);
     setDraft("");
     setMentionQuery(null);
-    setMentionHighlightIndex(0);
+    setMentionHighlightKey(null);
     setSlashQuery(null);
     setSelectedSkill(null);
     const mentions = selectedMentions;
@@ -6022,7 +6393,18 @@ export const Composer = memo(function Composer({
           data-testid="composer-error"
           className="mb-3 flex items-center gap-2 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-2 text-[13px] text-destructive"
         >
-          <span className="min-w-0 flex-1">{sendError ?? runError}</span>
+          <div className="min-w-0 flex-1">
+            {sendError ??
+              (runError
+                ? normalizeRunError(runError, translateRunError, i18n.locale || "en").summary
+                : null)}
+            {!sendError && runError ? (
+              <details key={runError} className="mt-1">
+                <summary className="w-fit cursor-pointer">{t`Details`}</summary>
+                <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{runError}</pre>
+              </details>
+            ) : null}
+          </div>
           <button
             type="button"
             aria-label={t`Dismiss error`}
@@ -6114,7 +6496,7 @@ export const Composer = memo(function Composer({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => insertMention(mention)}
                 // Opening the list under a stationary pointer must not steal the keyboard highlight.
-                onMouseMove={() => setMentionHighlightIndex(index)}
+                onMouseMove={() => setMentionHighlightKey(mentionChipKey(mention))}
                 className={`flex w-full items-start gap-3 px-4 py-2.5 text-start hover:bg-accent ${
                   highlighted ? "bg-accent" : ""
                 }`}
@@ -6261,8 +6643,10 @@ export const Composer = memo(function Composer({
               </button>
             </span>
           ))}
+          <HoldToTalkStrip talk={talk} />
           <textarea
             ref={textareaRef}
+            hidden={talk.recording !== null}
             value={draft}
             onChange={(event) => updateDraft(event.target.value)}
             onPaste={handlePaste}
@@ -6295,13 +6679,13 @@ export const Composer = memo(function Composer({
               }
               if (action.type === "move") {
                 event.preventDefault();
-                setMentionHighlightIndex(action.index);
+                setMentionHighlightKey(mentionChipKey(mentionOptions[action.index]!));
                 return;
               }
               if (action.type === "dismiss") {
                 event.preventDefault();
                 setMentionQuery(null);
-                setMentionHighlightIndex(0);
+                setMentionHighlightKey(null);
                 return;
               }
               if (action.type === "send") {
@@ -6337,21 +6721,13 @@ export const Composer = memo(function Composer({
             expanded ? "row-start-2" : ""
           }`}
         >
-          {onVoice && draft.trim().length === 0 ? (
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label={t`Voice`}
-              title={t`Voice`}
-              disabled={disabled}
-              onClick={onVoice}
-              className="size-8 shrink-0 rounded-full text-foreground/75"
-            >
-              <Mic size={16} strokeWidth={1.8} />
-            </Button>
-          ) : null}
-          {running ? (
+          {talk.recording?.locked ? (
+            <HoldToTalkControls talk={talk} />
+          ) : running ? (
             <>
+              {phoneCallsEnabled && draft.trim().length === 0 ? (
+                <HoldToTalkControls talk={talk} disabled={disabled || onCall} />
+              ) : null}
               <Button
                 size="icon"
                 aria-label={t`Send`}
@@ -6373,15 +6749,20 @@ export const Composer = memo(function Composer({
               </Button>
             </>
           ) : (
-            <Button
-              size="icon"
-              aria-label={t`Send`}
-              disabled={sending || !canSend || disabled}
-              onClick={send}
-              className="size-8 shrink-0 rounded-full bg-white text-black hover:bg-white/90 shadow-sm transition-transform active:scale-95 disabled:bg-white/10 disabled:text-muted-foreground/30 disabled:shadow-none"
-            >
-              <ArrowUp size={16} strokeWidth={2.2} />
-            </Button>
+            <>
+              {phoneCallsEnabled && draft.trim().length === 0 ? (
+                <HoldToTalkControls talk={talk} disabled={disabled || onCall} />
+              ) : null}
+              <Button
+                size="icon"
+                aria-label={t`Send`}
+                disabled={sending || !canSend || disabled}
+                onClick={send}
+                className="size-8 shrink-0 rounded-full bg-white text-black hover:bg-white/90 shadow-sm transition-transform active:scale-95 disabled:bg-white/10 disabled:text-muted-foreground/30 disabled:shadow-none"
+              >
+                <ArrowUp size={16} strokeWidth={2.2} />
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -6688,6 +7069,8 @@ const MessageView = memo(function MessageView({
   onAnswer,
   onOpenBot,
   onOpenPeerMessages,
+  peerReplies,
+  onTogglePeerReplies,
   speakerName,
   memberName,
   peerBot,
@@ -6708,6 +7091,9 @@ const MessageView = memo(function MessageView({
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
   onOpenBot: (botId: string) => void;
   onOpenPeerMessages: (peer: { peerBotId: string; peerBotName: string }) => void;
+  /** Set on a received marker whose peer run has folded replies. */
+  peerReplies?: "collapsed" | "expanded";
+  onTogglePeerReplies: (markerId: string) => void;
   speakerName?: string;
   memberName?: (botId: string | undefined) => string | undefined;
   peerBot: (botId: string) => { name?: string; color: string; status?: string } | undefined;
@@ -6877,6 +7263,15 @@ const MessageView = memo(function MessageView({
               identity={peerBotId}
               label={label}
               onClick={() => onOpenPeerMessages({ peerBotId, peerBotName: peer })}
+              replies={
+                !sent && peerReplies
+                  ? {
+                      expanded: peerReplies === "expanded",
+                      label: peerReplies === "expanded" ? t`Collapse ${label}` : t`Expand ${label}`,
+                      onToggle: () => onTogglePeerReplies(message.id),
+                    }
+                  : undefined
+              }
             />
           );
         }
