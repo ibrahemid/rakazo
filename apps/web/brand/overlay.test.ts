@@ -199,7 +199,7 @@ describe("catalog overrides", () => {
   it("writes every catalog with the fixture's strings and no leftovers", async () => {
     const outDir = tempDir();
     await writeBrandCatalogs(loadBrand(FIXTURE).strings, SOURCE_CATALOGS, outDir);
-    for (const locale of ["de", "en", "es", "fr", "hi", "ko", "pt-BR", "ru", "tr", "zh-CN"]) {
+    for (const locale of ["de", "en", "es", "fr", "he", "hi", "ko", "pt-BR", "ru", "tr", "zh-CN"]) {
       const po = readFileSync(path.join(outDir, locale, "messages.po"), "utf8");
       expect(po).toContain("Acme Bots");
       expect(
